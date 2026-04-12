@@ -47,6 +47,7 @@ const state = {
   memberTab: 'members',
   messageAudienceType: 'everyone',
   mobileNavOpen: false,
+  areaFocusId: '',
 };
 
 function loadDb() {
@@ -721,6 +722,7 @@ function renderMembers() {
   const areaOptions = state.db.areas;
   const g12Pastors = state.db.users.filter(u => u.role === 'g12');
   const canAdd = ['admin', 'bishop'].includes(user.role);
+  const focusedArea = getArea(state.areaFocusId);
 
   const listHtml = visibleMembers.map(member => {
     const profile = getMemberProfile(member);
@@ -773,6 +775,7 @@ function renderMembers() {
             </select>
           </div>
         </div>
+        ${focusedArea ? `<div class="notice area-focus-banner">Showing members in <strong>${escapeHtml(focusedArea.name)}</strong>. <button class="link-btn" type="button" data-clear-area-focus>Clear filter</button></div>` : ''}
         <div class="footer-note">Use date range to follow up on members added within a particular period.</div>
       </div>
     </section>
@@ -849,7 +852,7 @@ function renderAreas() {
         <div class="stat-list">
           ${areas.map(area => {
             const count = state.db.members.filter(m => m.areaId === area.id).length;
-            return `<div class="stat-row"><span>${escapeHtml(area.name)}</span><strong>${count} members</strong></div>`;
+            return `<div class="stat-row"><span><button class="link-btn" type="button" data-open-area-members="${area.id}">${escapeHtml(area.name)}</button></span><strong>${count} members</strong></div>`;
           }).join('') || `<div class="empty">No areas yet.</div>`}
         </div>
       </div>
@@ -859,17 +862,18 @@ function renderAreas() {
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>Area</th><th>Bishop</th><th>Members</th><th>Created</th></tr>
+            <tr><th>Area</th><th>Bishop</th><th>Members</th><th>Created</th>${canManage ? '<th>Actions</th>' : ''}</tr>
           </thead>
           <tbody>
             ${areas.length ? areas.map(area => `
               <tr>
-                <td>${escapeHtml(area.name)}</td>
+                <td><button class="link-btn" type="button" data-open-area-members="${area.id}">${escapeHtml(area.name)}</button></td>
                 <td>${escapeHtml(area.bishopName)}</td>
                 <td>${state.db.members.filter(m => m.areaId === area.id).length}</td>
                 <td>${fmtDate(area.createdAt)}</td>
+                ${canManage ? `<td><div class="inline-actions"><button class="btn tiny secondary" type="button" data-edit-area="${area.id}">Edit</button><button class="btn tiny danger" type="button" data-remove-area="${area.id}">Remove</button></div></td>` : ''}
               </tr>
-            `).join('') : `<tr><td colspan="4">No areas added yet.</td></tr>`}
+            `).join('') : `<tr><td colspan="${canManage ? '5' : '4'}">No areas added yet.</td></tr>`}
           </tbody>
         </table>
       </div>
@@ -1241,6 +1245,18 @@ function bindAppEvents() {
   q('#messageForm')?.addEventListener('submit', handleSendMessageNow);
   q('#saveMessageRuleBtn')?.addEventListener('click', handleSaveMessageRule);
 
+  qq('[data-edit-area]').forEach(btn => btn.addEventListener('click', () => handleEditArea(btn.dataset.editArea)));
+  qq('[data-remove-area]').forEach(btn => btn.addEventListener('click', () => handleRemoveArea(btn.dataset.removeArea)));
+  qq('[data-open-area-members]').forEach(btn => btn.addEventListener('click', () => {
+    state.areaFocusId = btn.dataset.openAreaMembers;
+    state.view = 'members';
+    render();
+  }));
+  q('[data-clear-area-focus]')?.addEventListener('click', () => {
+    state.areaFocusId = '';
+    render();
+  });
+
   q('#messageAudienceType')?.addEventListener('change', syncMessageAudienceVisibility);
   syncMessageAudienceVisibility();
 
@@ -1336,6 +1352,46 @@ function handleAddArea(event) {
   saveDb();
   event.target.reset();
   alert('Area created successfully.');
+  render();
+}
+
+function handleEditArea(areaId) {
+  const area = getArea(areaId);
+  if (!area) return;
+  const nextName = prompt('Edit area name', area.name);
+  if (nextName === null) return;
+  const cleanedName = String(nextName).trim();
+  if (!cleanedName) {
+    alert('Area name cannot be empty.');
+    return;
+  }
+  const nextBishop = prompt('Edit bishop name', area.bishopName || '');
+  if (nextBishop === null) return;
+  const cleanedBishop = String(nextBishop).trim();
+  if (!cleanedBishop) {
+    alert('Bishop name cannot be empty.');
+    return;
+  }
+  area.name = cleanedName;
+  area.bishopName = cleanedBishop;
+  saveDb();
+  render();
+}
+
+function handleRemoveArea(areaId) {
+  const area = getArea(areaId);
+  if (!area) return;
+  const membersCount = state.db.members.filter(m => m.areaId === areaId).length;
+  const prospectsCount = state.db.prospects.filter(p => p.areaId === areaId).length;
+  const bishopsCount = state.db.users.filter(u => u.role === 'bishop' && u.areaId === areaId).length;
+  const confirmed = confirm(`Remove ${area.name}? ${membersCount} member(s), ${prospectsCount} prospect(s), and ${bishopsCount} bishop account(s) will be unassigned from this area.`);
+  if (!confirmed) return;
+  state.db.areas = state.db.areas.filter(a => a.id !== areaId);
+  state.db.members.forEach(member => { if (member.areaId === areaId) member.areaId = ''; });
+  state.db.prospects.forEach(person => { if (person.areaId === areaId) person.areaId = ''; });
+  state.db.users.forEach(user => { if (user.areaId === areaId) user.areaId = ''; });
+  if (state.areaFocusId === areaId) state.areaFocusId = '';
+  saveDb();
   render();
 }
 
@@ -1447,7 +1503,8 @@ function applyMemberFilters() {
     const toMatch = !to || dateOnly <= to;
     const searchMatch = !search || member.fullName.toLowerCase().includes(search) || member.phone.toLowerCase().includes(search);
     const levelMatch = !levelFilter || level === levelFilter;
-    return tabMatch && fromMatch && toMatch && searchMatch && levelMatch;
+    const areaMatch = !state.areaFocusId || member.areaId === state.areaFocusId;
+    return tabMatch && fromMatch && toMatch && searchMatch && levelMatch && areaMatch;
   });
 
   table.innerHTML = members.length ? members.map(member => {
