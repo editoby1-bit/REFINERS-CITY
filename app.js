@@ -1,1204 +1,1596 @@
-const STORAGE_KEY = 'refiners_city_attendance_v1';
+const STORAGE_KEY = 'refiners_city_attendance_v2';
 
-const sundayPresets = ['Sunday - 1st Service', 'Sunday - 2nd Service', 'Sunday - 3rd Service', 'Sunday - 4th Service'];
-const midweekPreset = 'Midweek Service';
+const q = (s, el = document) => el.querySelector(s);
+const qq = (s, el = document) => Array.from(el.querySelectorAll(s));
+const app = q('#app');
 
-const appState = {
-  db: null,
-  session: null,
-  authMode: 'login',
-  toast: ''
+const uid = (prefix) => `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
+const todayStr = () => new Date().toISOString().slice(0, 10);
+const nowStr = () => new Date().toISOString();
+const fmtDate = (value) => value ? new Date(value).toLocaleDateString() : '—';
+const fmtDateTime = (value) => value ? new Date(value).toLocaleString() : '—';
+const escapeHtml = (text = '') => String(text)
+  .replaceAll('&', '&amp;')
+  .replaceAll('<', '&lt;')
+  .replaceAll('>', '&gt;')
+  .replaceAll('"', '&quot;')
+  .replaceAll("'", '&#039;');
+const phoneDigits = (phone = '') => String(phone).replace(/\D/g, '');
+const whatsappUrl = (phone, text) => `https://wa.me/${phoneDigits(phone)}?text=${encodeURIComponent(text)}`;
+
+const LEVELS = {
+  new: 'New Member',
+  consistent: 'Consistent New Timer',
+  strong: 'Strong Member',
 };
 
-function seedDatabase() {
-  const today = new Date().toISOString().slice(0, 10);
-  const services = [
-    { id: uid(), title: sundayPresets[0], type: 'statutory', category: 'Sunday', date: today, createdBy: 'system' },
-    { id: uid(), title: sundayPresets[1], type: 'statutory', category: 'Sunday', date: today, createdBy: 'system' },
-    { id: uid(), title: sundayPresets[2], type: 'statutory', category: 'Sunday', date: today, createdBy: 'system' },
-    { id: uid(), title: sundayPresets[3], type: 'statutory', category: 'Sunday', date: today, createdBy: 'system' },
-    { id: uid(), title: midweekPreset, type: 'statutory', category: 'Wednesday', date: today, createdBy: 'system' }
-  ];
+const STATIC_SERVICE_TYPES = [
+  'Sunday 1st Service',
+  'Sunday 2nd Service',
+  'Sunday 3rd Service',
+  'Sunday 4th Service',
+  'Midweek Service',
+];
 
-  const adminId = uid();
-  const ordainedId = uid();
-  const g12Id = uid();
+const ROLE_LABELS = {
+  admin: 'Church Admin',
+  ordained: 'Ordained Pastor',
+  g12: 'G12 Pastor',
+  bishop: 'Bishop',
+};
 
-  const members = [
-    { id: uid(), fullName: 'Mary Johnson', phone: '08030000001', address: '12 Grace Avenue', groupId: null, createdAt: today },
-    { id: uid(), fullName: 'Daniel Peters', phone: '08030000002', address: '4 Zion Street', groupId: null, createdAt: today },
-    { id: uid(), fullName: 'Sarah Bassey', phone: '08030000003', address: '21 Faith Estate', groupId: null, createdAt: today },
-    { id: uid(), fullName: 'Michael Udo', phone: '08030000004', address: '7 Mercy Close', groupId: null, createdAt: today },
-    { id: uid(), fullName: 'Joy Emmanuel', phone: '08030000005', address: '6 Covenant Road', groupId: null, createdAt: today },
-  ];
+const state = {
+  db: loadDb(),
+  session: null,
+  view: 'dashboard',
+  modalMemberId: null,
+  memberTab: 'members',
+  messageAudienceType: 'everyone',
+  mobileNavOpen: false,
+};
 
-  const groupId = uid();
-  members[0].groupId = groupId;
-  members[1].groupId = groupId;
+function loadDb() {
+  const raw = localStorage.getItem(STORAGE_KEY);
+  if (raw) {
+    const parsed = JSON.parse(raw);
+    parsed.automationLog ||= [];
+    parsed.messageRules ||= [];
+    parsed.prospects ||= [];
+    parsed.serviceEvents ||= [];
+    parsed.attendance ||= [];
+    parsed.members ||= [];
+    parsed.areas ||= [];
+    parsed.users ||= [];
+    parsed.session ||= null;
+    return parsed;
+  }
+
+  const adminId = uid('user');
+  const ordainedId = uid('user');
+  const g12Id = uid('user');
+  const bishopId = uid('user');
+  const area1 = uid('area');
+  const area2 = uid('area');
+  const classId = uid('g12class');
+  const member1 = uid('member');
+  const member2 = uid('member');
+  const prospect1 = uid('prospect');
+  const event1 = uid('event');
+  const event2 = uid('event');
+  const thisYear = new Date().getFullYear();
 
   return {
     users: [
-      { id: adminId, role: 'admin', fullName: 'Church Admin', username: 'admin', password: 'admin123', className: null },
-      { id: ordainedId, role: 'ordained', fullName: 'Pastor Samuel', username: 'ordained', password: 'pastor123', className: null },
-      { id: g12Id, role: 'g12', fullName: 'Pastor Toby', username: 'g12toby', password: 'g12123', className: "Pastor Toby's Class" }
+      { id: adminId, name: 'Church Admin', role: 'admin', email: 'admin@refiners.local', password: 'admin123', className: '', areaId: '', createdAt: nowStr() },
+      { id: ordainedId, name: 'Pastor Daniel', role: 'ordained', email: 'ordained@refiners.local', password: 'pastor123', className: '', areaId: '', createdAt: nowStr() },
+      { id: g12Id, name: 'Pastor Toby', role: 'g12', email: 'g12@refiners.local', password: 'g12pass', className: "Pastor Toby's Class", areaId: '', createdAt: nowStr() },
+      { id: bishopId, name: 'Bishop Esther', role: 'bishop', email: 'bishop@refiners.local', password: 'bishop123', className: '', areaId: area1, createdAt: nowStr() },
     ],
-    g12Groups: [
-      { id: groupId, pastorId: g12Id, pastorName: 'Pastor Toby', className: "Pastor Toby's Class", createdAt: today }
+    areas: [
+      { id: area1, name: 'Area Alpha', bishopName: 'Bishop Esther', createdAt: nowStr() },
+      { id: area2, name: 'Area Beta', bishopName: 'Bishop Samuel', createdAt: nowStr() },
     ],
-    members,
-    services,
-    attendance: [],
-    metadata: { churchName: 'Refiners City International Church' }
+    members: [
+      {
+        id: member1,
+        fullName: 'Grace Ukpong',
+        address: '21 Peace Street',
+        phone: '08030000001',
+        birthday: `${thisYear}-12-25`,
+        areaId: area1,
+        g12PastorId: g12Id,
+        createdAt: nowStr(),
+        createdByUserId: adminId,
+      },
+      {
+        id: member2,
+        fullName: 'Michael James',
+        address: '4 Hope Avenue',
+        phone: '08030000002',
+        birthday: `${thisYear}-01-10`,
+        areaId: '',
+        g12PastorId: '',
+        createdAt: nowStr(),
+        createdByUserId: bishopId,
+      },
+    ],
+    prospects: [
+      {
+        id: prospect1,
+        fullName: 'Sandra Peter',
+        phone: '08030000003',
+        address: '8 Unity Close',
+        birthday: `${thisYear}-08-14`,
+        areaId: area2,
+        createdAt: nowStr(),
+      }
+    ],
+    serviceEvents: [
+      { id: event1, name: 'Sunday 1st Service', category: 'Sunday', date: todayStr(), custom: false, createdByUserId: adminId, createdAt: nowStr() },
+      { id: event2, name: 'Midweek Service', category: 'Midweek', date: todayStr(), custom: false, createdByUserId: adminId, createdAt: nowStr() },
+    ],
+    attendance: [
+      { id: uid('att'), eventId: event1, memberId: member1, markedByUserId: adminId, createdAt: nowStr() },
+      { id: uid('att'), eventId: event1, memberId: member2, markedByUserId: adminId, createdAt: nowStr() },
+      { id: uid('att'), eventId: event2, memberId: member1, markedByUserId: adminId, createdAt: nowStr() },
+    ],
+    messageRules: [
+      {
+        id: uid('rule'),
+        title: 'Birthday Blessing',
+        type: 'birthday',
+        audienceType: 'birthdays_today',
+        message: 'Happy Birthday from Refiners City International Church. We celebrate you and pray for a blessed new year.',
+        scheduleDate: '',
+        yearly: true,
+        createdAt: nowStr(),
+      },
+      {
+        id: uid('rule'),
+        title: 'Christmas Greeting',
+        type: 'holiday',
+        audienceType: 'everyone',
+        message: 'Merry Christmas from Refiners City International Church. Jesus is Lord.',
+        scheduleDate: `${thisYear}-12-25`,
+        yearly: true,
+        createdAt: nowStr(),
+      }
+    ],
+    automationLog: [],
+    session: null,
   };
 }
 
-function uid() {
-  return Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+function saveDb() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state.db));
 }
 
-function loadDB() {
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) {
-    const seeded = seedDatabase();
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(seeded));
-    return seeded;
-  }
-  return JSON.parse(raw);
+function setSession(userId) {
+  state.db.session = userId;
+  saveDb();
+  state.session = getCurrentUser();
 }
 
-function saveDB() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(appState.db));
+function clearSession() {
+  state.db.session = null;
+  saveDb();
+  state.session = null;
 }
 
-function showToast(message) {
-  appState.toast = message;
-  render();
-  setTimeout(() => {
-    if (appState.toast === message) {
-      appState.toast = '';
-      render();
+function getCurrentUser() {
+  return state.db.users.find(u => u.id === state.db.session) || null;
+}
+
+function getArea(areaId) {
+  return state.db.areas.find(a => a.id === areaId) || null;
+}
+
+function getMember(memberId) {
+  return state.db.members.find(m => m.id === memberId) || null;
+}
+
+function getUser(userId) {
+  return state.db.users.find(u => u.id === userId) || null;
+}
+
+function getMembersForUser(user) {
+  if (!user) return [];
+  if (user.role === 'bishop') return state.db.members.filter(m => m.areaId === user.areaId);
+  return state.db.members;
+}
+
+function getAttendanceCount(memberId) {
+  return state.db.attendance.filter(a => a.memberId === memberId).length;
+}
+
+function getLevelFromCount(count) {
+  if (count >= 16) return LEVELS.strong;
+  if (count >= 8) return LEVELS.consistent;
+  return LEVELS.new;
+}
+
+function getMemberLevel(memberId) {
+  return getLevelFromCount(getAttendanceCount(memberId));
+}
+
+function getMemberProfile(member) {
+  const area = getArea(member.areaId);
+  const pastor = getUser(member.g12PastorId);
+  return {
+    ...member,
+    areaName: area?.name || 'Not assigned',
+    g12Class: pastor?.className || 'Not assigned',
+    level: getMemberLevel(member.id),
+    attendanceCount: getAttendanceCount(member.id),
+  };
+}
+
+function getBirthdaysToday(type = 'members') {
+  const source = type === 'prospects' ? state.db.prospects : state.db.members;
+  const today = new Date();
+  const mm = String(today.getMonth() + 1).padStart(2, '0');
+  const dd = String(today.getDate()).padStart(2, '0');
+  return source.filter(item => (item.birthday || '').slice(5) === `${mm}-${dd}`);
+}
+
+function getDashboardStats(user) {
+  const members = getMembersForUser(user);
+  const prospects = user.role === 'bishop'
+    ? state.db.prospects.filter(p => p.areaId === user.areaId)
+    : state.db.prospects;
+  const attendanceToday = state.db.attendance.filter(a => {
+    const event = state.db.serviceEvents.find(e => e.id === a.eventId);
+    return event?.date === todayStr() && members.some(m => m.id === a.memberId);
+  }).length;
+
+  return {
+    members: members.length,
+    areas: state.db.areas.length,
+    prospects: prospects.length,
+    attendanceToday,
+  };
+}
+
+function getPastorServiceSummary(user) {
+  return state.db.serviceEvents
+    .slice()
+    .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt))
+    .slice(0, 8)
+    .map(event => {
+      const attendance = state.db.attendance.filter(a => a.eventId === event.id);
+      const total = attendance.length;
+      const own = user.role === 'g12'
+        ? attendance.filter(a => getMember(a.memberId)?.g12PastorId === user.id).length
+        : user.role === 'bishop'
+          ? attendance.filter(a => getMember(a.memberId)?.areaId === user.areaId).length
+          : total;
+      return { event, total, own };
+    });
+}
+
+function getAudienceOptions() {
+  const g12Pastors = state.db.users.filter(u => u.role === 'g12');
+  return {
+    areas: state.db.areas,
+    pastors: g12Pastors,
+    members: state.db.members,
+    prospects: state.db.prospects,
+  };
+}
+
+function computeEasterDate(year) {
+  const a = year % 19;
+  const b = Math.floor(year / 100);
+  const c = year % 100;
+  const d = Math.floor(b / 4);
+  const e = b % 4;
+  const f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4);
+  const k = c % 4;
+  const l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31);
+  const day = ((h + l - 7 * m + 114) % 31) + 1;
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+function getDueAutomations() {
+  const today = todayStr();
+  const todayMonthDay = today.slice(5);
+  return state.db.messageRules.filter(rule => {
+    if (rule.type === 'birthday') {
+      const list = getAudience(rule).filter(item => (item.birthday || '').slice(5) === todayMonthDay);
+      if (!list.length) return false;
+      const token = `${rule.id}_${today}`;
+      return !state.db.automationLog.includes(token);
     }
-  }, 2600);
+    if (rule.type === 'holiday') {
+      let targetDate = rule.scheduleDate;
+      if ((rule.title || '').toLowerCase().includes('easter')) {
+        targetDate = computeEasterDate(new Date().getFullYear());
+      } else if (rule.yearly && rule.scheduleDate) {
+        targetDate = `${new Date().getFullYear()}-${rule.scheduleDate.slice(5)}`;
+      }
+      const token = `${rule.id}_${today}`;
+      return targetDate === today && !state.db.automationLog.includes(token);
+    }
+    if (rule.type === 'scheduled') {
+      const token = `${rule.id}_${today}`;
+      if (rule.yearly && rule.scheduleDate) {
+        return `${new Date().getFullYear()}-${rule.scheduleDate.slice(5)}` === today && !state.db.automationLog.includes(token);
+      }
+      return rule.scheduleDate === today && !state.db.automationLog.includes(token);
+    }
+    return false;
+  });
 }
 
-function init() {
-  appState.db = loadDB();
-  render();
+function markAutomationSent(ruleId) {
+  const token = `${ruleId}_${todayStr()}`;
+  if (!state.db.automationLog.includes(token)) {
+    state.db.automationLog.push(token);
+    saveDb();
+  }
 }
 
-function setSession(user) {
-  appState.session = {
-    user,
-    screen: defaultScreenForRole(user.role)
-  };
-  render();
+function getAudience(ruleLike) {
+  const audienceType = ruleLike.audienceType;
+  const audienceId = ruleLike.audienceId;
+  if (audienceType === 'everyone') return state.db.members;
+  if (audienceType === 'all_prospects') return state.db.prospects;
+  if (audienceType === 'birthdays_today') return getBirthdaysToday('members');
+  if (audienceType === 'area') return state.db.members.filter(m => m.areaId === audienceId);
+  if (audienceType === 'g12') return state.db.members.filter(m => m.g12PastorId === audienceId);
+  if (audienceType === 'single_member') return state.db.members.filter(m => m.id === audienceId);
+  if (audienceType === 'single_prospect') return state.db.prospects.filter(p => p.id === audienceId);
+  if (audienceType === 'selected_members') return state.db.members.filter(m => (ruleLike.selectedIds || []).includes(m.id));
+  if (audienceType === 'selected_prospects') return state.db.prospects.filter(p => (ruleLike.selectedIds || []).includes(p.id));
+  return [];
 }
 
-function logout() {
-  appState.session = null;
-  render();
+function getMessageTargets({ audienceType, audienceId, selectedIds }) {
+  return getAudience({ audienceType, audienceId, selectedIds });
 }
 
-function defaultScreenForRole(role) {
-  if (role === 'admin') return 'dashboard';
-  if (role === 'g12') return 'g12-dashboard';
-  return 'pastor-dashboard';
+function openWhatsappForTargets(targets, message) {
+  const valid = targets.filter(t => phoneDigits(t.phone));
+  if (!valid.length) {
+    alert('No valid phone numbers found for this audience.');
+    return;
+  }
+  valid.forEach((target, index) => {
+    setTimeout(() => {
+      window.open(whatsappUrl(target.phone, personaliseMessage(message, target)), '_blank');
+    }, index * 250);
+  });
+}
+
+function personaliseMessage(message, target) {
+  return message.replaceAll('{name}', target.fullName || target.name || 'Member');
 }
 
 function render() {
-  const app = document.getElementById('app');
-  app.innerHTML = appState.session ? renderDashboardShell() : renderAuth();
-  bindEvents();
+  state.session = getCurrentUser();
+  if (!state.session) {
+    renderAuth();
+  } else {
+    renderApp();
+  }
 }
 
 function renderAuth() {
-  return `
+  app.innerHTML = `
     <div class="auth-wrap">
-      <div class="auth-brand">
-        <img src="assets/logo.jpg" alt="Church logo" />
-        <div class="stack">
-          <h1>Refiners City Attendance & Member Database</h1>
-          <p>
-            Full church member database, service attendance tracking, statutory Sunday and midweek service records,
-            custom conferences and events, plus role-based dashboards for church administration, ordained pastors and G12 pastors.
-          </p>
+      <div class="auth-card">
+        <div class="auth-brand">
+          <img src="assets/logo.jpg" alt="Refiners City logo" />
+          <h2>Refiners City International Church</h2>
+          <p>Attendance, membership growth, area structure, G12 tracking, follow-up lists, birthdays, and WhatsApp outreach in one place.</p>
+          <div class="notice">Demo accounts: Admin / Ordained / G12 / Bishop are already loaded. Login details are also in the README.</div>
         </div>
-        <div class="auth-note">
-          <strong>Demo access</strong><br>
-          Admin: <b>admin / admin123</b><br>
-          Ordained Pastor: <b>ordained / pastor123</b><br>
-          G12 Pastor: <b>g12toby / g12123</b>
+        <div class="auth-form">
+          <h1 class="auth-title">Welcome back</h1>
+          <p class="auth-subtitle">Sign in to continue, or create a pastor / bishop account. Church Admin remains the only role that can mark attendance.</p>
+
+          <div class="tabs">
+            <button class="active" data-auth-tab="login">Login</button>
+            <button data-auth-tab="signup">Create account</button>
+          </div>
+
+          <div data-auth-panel="login">
+            <form id="loginForm" class="form-grid single">
+              <div class="field">
+                <label>Email</label>
+                <input type="email" name="email" placeholder="Enter email" required />
+              </div>
+              <div class="field">
+                <label>Password</label>
+                <input type="password" name="password" placeholder="Enter password" required />
+              </div>
+              <button class="btn" type="submit">Login</button>
+            </form>
+          </div>
+
+          <div data-auth-panel="signup" class="hidden">
+            <form id="signupForm" class="form-grid">
+              <div class="field">
+                <label>Full Name</label>
+                <input name="name" required />
+              </div>
+              <div class="field">
+                <label>Email</label>
+                <input type="email" name="email" required />
+              </div>
+              <div class="field">
+                <label>Password</label>
+                <input type="password" name="password" required />
+              </div>
+              <div class="field">
+                <label>Role</label>
+                <select name="role" required>
+                  <option value="ordained">Ordained Pastor</option>
+                  <option value="g12">G12 Pastor</option>
+                  <option value="bishop">Bishop</option>
+                </select>
+              </div>
+              <div class="field hidden" data-signup-class-field>
+                <label>G12 Class Name</label>
+                <input name="className" placeholder="Example: Pastor Toby's Class" />
+              </div>
+              <div class="field hidden" data-signup-area-field>
+                <label>Select Area</label>
+                <select name="areaId">
+                  <option value="">Choose area</option>
+                  ${state.db.areas.map(area => `<option value="${area.id}">${escapeHtml(area.name)}</option>`).join('')}
+                </select>
+              </div>
+              <div class="inline-actions" style="grid-column:1/-1;">
+                <button class="btn" type="submit">Create account</button>
+              </div>
+            </form>
+          </div>
         </div>
       </div>
+    </div>
+  `;
 
-      <div class="auth-card-wrap">
-        <div class="card auth-card stack">
+  const tabButtons = qq('[data-auth-tab]');
+  const panels = qq('[data-auth-panel]');
+  tabButtons.forEach(btn => btn.addEventListener('click', () => {
+    tabButtons.forEach(b => b.classList.toggle('active', b === btn));
+    panels.forEach(panel => panel.classList.toggle('hidden', panel.dataset.authPanel !== btn.dataset.authTab));
+  }));
+
+  q('#loginForm').addEventListener('submit', handleLogin);
+  const signupForm = q('#signupForm');
+  signupForm.addEventListener('submit', handleSignup);
+  signupForm.role.addEventListener('change', syncSignupVisibility);
+  syncSignupVisibility();
+}
+
+function syncSignupVisibility() {
+  const form = q('#signupForm');
+  if (!form) return;
+  const role = form.role.value;
+  q('[data-signup-class-field]').classList.toggle('hidden', role !== 'g12');
+  q('[data-signup-area-field]').classList.toggle('hidden', role !== 'bishop');
+}
+
+function handleLogin(event) {
+  event.preventDefault();
+  const fd = new FormData(event.target);
+  const email = String(fd.get('email')).trim().toLowerCase();
+  const password = String(fd.get('password'));
+  const user = state.db.users.find(u => u.email.toLowerCase() === email && u.password === password);
+  if (!user) {
+    alert('Invalid email or password.');
+    return;
+  }
+  setSession(user.id);
+  state.view = 'dashboard';
+  render();
+}
+
+function handleSignup(event) {
+  event.preventDefault();
+  const fd = new FormData(event.target);
+  const role = String(fd.get('role'));
+  const email = String(fd.get('email')).trim().toLowerCase();
+  if (state.db.users.some(u => u.email.toLowerCase() === email)) {
+    alert('That email already exists.');
+    return;
+  }
+
+  let areaId = String(fd.get('areaId') || '');
+  let className = String(fd.get('className') || '').trim();
+
+  if (role === 'g12' && !className) {
+    alert('G12 pastors must enter their class name.');
+    return;
+  }
+  if (role === 'bishop' && !areaId) {
+    alert('Bishops must choose an area.');
+    return;
+  }
+
+  const newUser = {
+    id: uid('user'),
+    name: String(fd.get('name')).trim(),
+    email,
+    password: String(fd.get('password')),
+    role,
+    className,
+    areaId,
+    createdAt: nowStr(),
+  };
+  state.db.users.push(newUser);
+  saveDb();
+  setSession(newUser.id);
+  state.view = 'dashboard';
+  render();
+}
+
+function renderApp() {
+  const user = state.session;
+  const pageContent = renderView();
+  app.innerHTML = `
+    <div class="app-shell layout">
+      <aside class="sidebar ${state.mobileNavOpen ? 'open' : ''}">
+        <div class="brand">
+          <img src="assets/logo.jpg" alt="logo" />
+          <div class="brand-text">
+            <h1>Refiners City</h1>
+            <p>Attendance & Growth App</p>
+          </div>
+        </div>
+
+        <div class="user-chip">
+          <h3>${escapeHtml(user.name)}</h3>
+          <p>${ROLE_LABELS[user.role]}${user.role === 'g12' && user.className ? ` • ${escapeHtml(user.className)}` : ''}${user.role === 'bishop' && getArea(user.areaId) ? ` • ${escapeHtml(getArea(user.areaId).name)}` : ''}</p>
+        </div>
+
+        <div class="nav">
+          ${navButton('dashboard', 'Dashboard')}
+          ${navButton('members', 'Members')}
+          ${navButton('areas', 'Areas')}
+          ${navButton('attendance', 'Attendance')}
+          ${navButton('messages', 'WhatsApp Centre')}
+          ${navButton('prospects', 'Non Members')}
+          ${navButton('birthdays', 'Birthdays Today')}
+          ${navButton('automation', 'Automation Rules')}
+        </div>
+
+        <div class="sidebar-footer">
+          <button class="btn secondary" data-action="check-automation">Run due automations</button>
+          <button class="btn" data-action="logout">Logout</button>
+        </div>
+      </aside>
+
+      <main class="main">
+        <div class="topbar">
           <div>
-            <div class="auth-tabs">
-              <button class="${appState.authMode === 'login' ? 'active' : ''}" data-auth-mode="login">Sign In</button>
-              <button class="${appState.authMode === 'signup' ? 'active' : ''}" data-auth-mode="signup">Create Account</button>
-            </div>
+            <button class="mobile-nav-toggle" data-action="toggle-nav">☰</button>
+            <h2 class="page-title">${getViewTitle()}</h2>
+            <p class="page-subtitle">${getViewSubtitle(user)}</p>
           </div>
-          ${appState.authMode === 'login' ? renderLoginForm() : renderSignupForm()}
+          <div class="inline-actions">
+            <span class="badge neutral">${ROLE_LABELS[user.role]}</span>
+            ${getDueAutomations().length ? `<span class="badge warn">${getDueAutomations().length} due automation${getDueAutomations().length > 1 ? 's' : ''}</span>` : ''}
+          </div>
         </div>
-      </div>
+        ${pageContent}
+      </main>
     </div>
-    ${renderToast()}
+
+    <div id="memberModal" class="modal-backdrop ${state.modalMemberId ? 'show' : ''}">
+      <div class="modal">${renderMemberModal()}</div>
+    </div>
   `;
+
+  bindAppEvents();
 }
 
-function renderLoginForm() {
-  return `
-    <form id="login-form" class="stack">
-      <div>
-        <h2 style="margin:0 0 6px;">Welcome back</h2>
-        <p class="muted" style="margin:0;">Sign in to continue to your role-specific dashboard.</p>
-      </div>
-      <div class="field">
-        <label>Username</label>
-        <input name="username" placeholder="Enter username" required />
-      </div>
-      <div class="field">
-        <label>Password</label>
-        <input name="password" type="password" placeholder="Enter password" required />
-      </div>
-      <button class="btn btn-primary" type="submit">Sign In</button>
-    </form>
-  `;
+function navButton(view, label) {
+  return `<button class="${state.view === view ? 'active' : ''}" data-nav="${view}">${label}</button>`;
 }
 
-function renderSignupForm() {
-  return `
-    <form id="signup-form" class="stack">
-      <div>
-        <h2 style="margin:0 0 6px;">Create a new role account</h2>
-        <p class="muted" style="margin:0;">G12 pastors can define their class name during signup.</p>
-      </div>
-      <div class="grid-2">
-        <div class="field">
-          <label>Full Name</label>
-          <input name="fullName" placeholder="Enter full name" required />
-        </div>
-        <div class="field">
-          <label>Username</label>
-          <input name="username" placeholder="Choose username" required />
-        </div>
-      </div>
-      <div class="grid-2">
-        <div class="field">
-          <label>Password</label>
-          <input name="password" type="password" placeholder="Create password" required />
-        </div>
-        <div class="field">
-          <label>Role</label>
-          <select name="role" id="signup-role-select" required>
-            <option value="ordained">Ordained Pastor</option>
-            <option value="g12">G12 Pastor</option>
-            <option value="admin">Church Admin</option>
-          </select>
-        </div>
-      </div>
-      <div class="field" id="class-name-field" style="display:none;">
-        <label>G12 Class Name</label>
-        <input name="className" placeholder="Example: Pastor Toby's Class" />
-      </div>
-      <button class="btn btn-primary" type="submit">Create Account</button>
-    </form>
-  `;
+function getViewTitle() {
+  const map = {
+    dashboard: 'Dashboard',
+    members: 'Members Database',
+    areas: 'Areas & Administration',
+    attendance: 'Attendance Control',
+    messages: 'WhatsApp Centre',
+    prospects: 'Non Members',
+    birthdays: 'Birthdays Today',
+    automation: 'Automation Rules',
+  };
+  return map[state.view] || 'Dashboard';
 }
 
-function renderDashboardShell() {
-  const { user } = appState.session;
-  const navItems = getNavItems(user.role);
-  const activeScreen = appState.session.screen;
+function getViewSubtitle(user) {
+  if (state.view === 'attendance' && user.role !== 'admin') return 'Church Admin alone can mark attendance. Other roles can only review results.';
+  if (state.view === 'areas') return 'Create church areas, assign bishops, and connect members to their administrative base.';
+  if (state.view === 'messages') return 'Prepare manual, scheduled, holiday, and birthday WhatsApp messages for one person or many groups.';
+  return 'Manage membership growth, follow-up, services, and communication from one responsive app.';
+}
+
+function renderView() {
+  switch (state.view) {
+    case 'dashboard': return renderDashboard();
+    case 'members': return renderMembers();
+    case 'areas': return renderAreas();
+    case 'attendance': return renderAttendance();
+    case 'messages': return renderMessages();
+    case 'prospects': return renderProspects();
+    case 'birthdays': return renderBirthdays();
+    case 'automation': return renderAutomation();
+    default: return renderDashboard();
+  }
+}
+
+function renderDashboard() {
+  const user = state.session;
+  const stats = getDashboardStats(user);
+  const summary = getPastorServiceSummary(user);
+  const visibleMembers = getMembersForUser(user);
+  const newMembers = visibleMembers.filter(m => getMemberLevel(m.id) === LEVELS.new).length;
+  const consistent = visibleMembers.filter(m => getMemberLevel(m.id) === LEVELS.consistent).length;
+  const strong = visibleMembers.filter(m => getMemberLevel(m.id) === LEVELS.strong).length;
+  const due = getDueAutomations();
 
   return `
-    <div class="app-shell">
-      <div class="topbar">
-        <div class="topbar-inner">
-          <div class="brand">
-            <img src="assets/logo.jpg" alt="Church logo">
+    <section class="metrics">
+      <div class="metric"><span>Total Members</span><strong>${stats.members}</strong></div>
+      <div class="metric"><span>Attendance Today</span><strong>${stats.attendanceToday}</strong></div>
+      <div class="metric"><span>Areas</span><strong>${stats.areas}</strong></div>
+      <div class="metric"><span>Prospects</span><strong>${stats.prospects}</strong></div>
+    </section>
+
+    <section class="two-col">
+      <div class="card">
+        <h3>Growth Ladder</h3>
+        <div class="stat-list">
+          <div class="stat-row"><span>New Members</span><strong>${newMembers}</strong></div>
+          <div class="stat-row"><span>Consistent New Timers</span><strong>${consistent}</strong></div>
+          <div class="stat-row"><span>Strong Members</span><strong>${strong}</strong></div>
+        </div>
+        <p class="footer-note">Promotion logic: every 8 attended service events advances the member to the next level.</p>
+      </div>
+      <div class="card">
+        <h3>Due Automation</h3>
+        ${due.length ? due.map(rule => `
+          <div class="member-item">
             <div>
-              <div class="brand-title">Refiners City Attendance</div>
-              <div class="brand-sub">${appState.db.metadata.churchName}</div>
+              <strong>${escapeHtml(rule.title)}</strong>
+              <div class="member-meta">Audience: ${escapeHtml(rule.audienceType.replaceAll('_', ' '))}</div>
             </div>
+            <button class="btn tiny" data-run-rule="${rule.id}">Send now</button>
           </div>
-          <div class="top-actions">
-            <div class="role-pill">${roleLabel(user.role)}</div>
-            <div class="role-pill">${escapeHtml(user.fullName)}</div>
-            ${user.role === 'g12' && user.className ? `<div class="role-pill">${escapeHtml(user.className)}</div>` : ''}
-            <button class="btn btn-outline" id="logout-btn">Logout</button>
-          </div>
-        </div>
-      </div>
-
-      <div class="layout">
-        <aside class="card sidebar">
-          <h3>Navigation</h3>
-          <div class="nav-list">
-            ${navItems.map(item => `
-              <button class="nav-btn ${item.key === activeScreen ? 'active' : ''}" data-screen="${item.key}">
-                <span>${item.label}</span>
-                <small>${item.hint}</small>
-              </button>
-            `).join('')}
-          </div>
-        </aside>
-
-        <main class="content">
-          ${renderScreen(activeScreen, user)}
-        </main>
-      </div>
-
-      <div class="footer-note">Built as a full browser-based attendance and member management system. Data is saved in local browser storage for demo use.</div>
-    </div>
-    ${renderToast()}
-  `;
-}
-
-function getNavItems(role) {
-  if (role === 'admin') {
-    return [
-      { key: 'dashboard', label: 'Dashboard', hint: 'Overview' },
-      { key: 'members', label: 'Members Database', hint: 'Manage members' },
-      { key: 'services', label: 'Services & Activities', hint: 'Create services' },
-      { key: 'attendance', label: 'Attendance Marking', hint: 'Admin only' },
-      { key: 'groups', label: 'G12 Groups', hint: 'Monitor classes' },
-      { key: 'reports', label: 'Reports', hint: 'Attendance summary' }
-    ];
-  }
-  if (role === 'g12') {
-    return [
-      { key: 'g12-dashboard', label: 'Dashboard', hint: 'Class view' },
-      { key: 'g12-members', label: 'My G12 Class', hint: 'Read only stats' },
-      { key: 'g12-assign', label: 'Assign Members', hint: 'Manage class' },
-      { key: 'g12-services', label: 'Services', hint: 'Attendance insight' }
-    ];
-  }
-  return [
-    { key: 'pastor-dashboard', label: 'Dashboard', hint: 'Read only' },
-    { key: 'pastor-members', label: 'Members', hint: 'View database' },
-    { key: 'pastor-services', label: 'Services', hint: 'Attendance view' },
-    { key: 'pastor-groups', label: 'G12 Groups', hint: 'View classes' }
-  ];
-}
-
-function renderScreen(screen, user) {
-  switch (screen) {
-    case 'dashboard': return renderAdminDashboard();
-    case 'members': return renderMembersPage();
-    case 'services': return renderServicesPage();
-    case 'attendance': return renderAttendancePage();
-    case 'groups': return renderGroupsPage();
-    case 'reports': return renderReportsPage();
-    case 'g12-dashboard': return renderG12Dashboard(user);
-    case 'g12-members': return renderG12MembersPage(user);
-    case 'g12-assign': return renderG12AssignPage(user);
-    case 'g12-services': return renderG12ServicesPage(user);
-    case 'pastor-dashboard': return renderOrdainedDashboard();
-    case 'pastor-members': return renderReadonlyMembers();
-    case 'pastor-services': return renderReadonlyServices();
-    case 'pastor-groups': return renderReadonlyGroups();
-    default: return '<div class="empty-state">Screen not found.</div>';
-  }
-}
-
-function renderAdminDashboard() {
-  const { members, services, attendance, g12Groups } = appState.db;
-  const latestServices = [...services].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 6);
-  return `
-    <section class="section-head">
-      <div>
-        <h2>Church Admin Dashboard</h2>
-        <p>Admin can manage the member database, create services and mark attendance.</p>
-      </div>
-    </section>
-
-    <section class="kpi-grid">
-      <div class="card kpi"><small>Total Members</small><strong>${members.length}</strong><span>All registered members in the database</span></div>
-      <div class="card kpi"><small>Total Services</small><strong>${services.length}</strong><span>Statutory and custom activities combined</span></div>
-      <div class="card kpi"><small>Attendance Marks</small><strong>${attendance.length}</strong><span>Total marked attendance entries</span></div>
-      <div class="card kpi"><small>G12 Classes</small><strong>${g12Groups.length}</strong><span>Active G12 pastor groups</span></div>
-    </section>
-
-    <section class="two-col">
-      <div class="card panel">
-        <div class="panel-head"><h3>Recent Services</h3><span class="muted">Quick view of upcoming or recent activities</span></div>
-        <div class="service-grid">
-          ${latestServices.map(service => serviceCard(service)).join('') || '<div class="empty-state">No services available.</div>'}
-        </div>
-      </div>
-      <div class="card panel">
-        <div class="panel-head"><h3>Quick Actions</h3><span class="muted">Administrative shortcuts</span></div>
-        <div class="stack">
-          <button class="btn btn-primary" data-screen-jump="members">Add New Member</button>
-          <button class="btn btn-secondary" data-screen-jump="services">Create Service / Conference</button>
-          <button class="btn btn-soft" data-screen-jump="attendance">Mark Attendance</button>
-          <button class="btn btn-outline" data-screen-jump="reports">Open Reports</button>
-        </div>
-      </div>
-    </section>
-  `;
-}
-
-function renderMembersPage() {
-  const members = [...appState.db.members].sort((a, b) => a.fullName.localeCompare(b.fullName));
-  return `
-    <section class="section-head">
-      <div>
-        <h2>Members Database</h2>
-        <p>Store full name, address and phone number for church members.</p>
+        `).join('') : `<div class="empty">No automation is due right now.</div>`}
       </div>
     </section>
 
     <section class="two-col">
-      <div class="card panel">
-        <div class="panel-head"><h3>Add New Member</h3><span class="muted">Church-wide database entry</span></div>
-        <form id="member-form" class="stack">
-          <div class="field">
-            <label>Full Name</label>
-            <input name="fullName" placeholder="Enter full name" required>
-          </div>
-          <div class="grid-2">
-            <div class="field">
-              <label>Phone Number</label>
-              <input name="phone" placeholder="Enter phone number" required>
-            </div>
-            <div class="field">
-              <label>Address</label>
-              <input name="address" placeholder="Enter address" required>
-            </div>
-          </div>
-          <button class="btn btn-primary" type="submit">Save Member</button>
-        </form>
-      </div>
-
-      <div class="card panel">
-        <div class="panel-head"><h3>Member Summary</h3><span class="muted">Current database health</span></div>
-        <div class="kpi-grid" style="grid-template-columns:repeat(2, minmax(0, 1fr));">
-          <div class="card kpi"><small>Total</small><strong>${members.length}</strong><span>Registered members</span></div>
-          <div class="card kpi"><small>Assigned to G12</small><strong>${members.filter(m => m.groupId).length}</strong><span>Already in classes</span></div>
-        </div>
-      </div>
-    </section>
-
-    <section class="card panel">
-      <div class="panel-head"><h3>All Members</h3><span class="muted">General list available to admins and pastors</span></div>
-      ${members.length ? `
-      <div class="table-wrap">
-        <table class="table">
-          <thead>
-            <tr>
-              <th>Name</th><th>Phone</th><th>Address</th><th>G12 Class</th><th>Attendance Marks</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${members.map(member => `
+      <div class="card">
+        <h3>Service Summary</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
               <tr>
-                <td>${escapeHtml(member.fullName)}</td>
-                <td>${escapeHtml(member.phone)}</td>
-                <td>${escapeHtml(member.address)}</td>
-                <td>${groupName(member.groupId)}</td>
-                <td>${countMemberAttendance(member.id)}</td>
+                <th>Date</th>
+                <th>Service</th>
+                <th>Total Attendance</th>
+                <th>${user.role === 'g12' ? 'My G12' : user.role === 'bishop' ? 'My Area' : 'Visible'}</th>
               </tr>
-            `).join('')}
-          </tbody>
-        </table>
-      </div>` : '<div class="empty-state">No members added yet.</div>'}
-    </section>
-  `;
-}
-
-function renderServicesPage() {
-  const services = [...appState.db.services].sort((a, b) => (b.date + b.title).localeCompare(a.date + a.title));
-  return `
-    <section class="section-head">
-      <div>
-        <h2>Services & Activities</h2>
-        <p>Create statutory and custom church activities. Sundays and midweek can be tracked alongside conferences and special events.</p>
-      </div>
-    </section>
-
-    <section class="two-col">
-      <div class="card panel">
-        <div class="panel-head"><h3>Create Custom Activity</h3><span class="muted">For conferences, programs and special services</span></div>
-        <form id="service-form" class="stack">
-          <div class="grid-2">
-            <div class="field">
-              <label>Activity Title</label>
-              <input name="title" placeholder="Example: Youth Conference Day 1" required>
-            </div>
-            <div class="field">
-              <label>Date</label>
-              <input name="date" type="date" required>
-            </div>
-          </div>
-          <div class="grid-2">
-            <div class="field">
-              <label>Category</label>
-              <select name="category">
-                <option>Custom Activity</option>
-                <option>Conference</option>
-                <option>Special Service</option>
-                <option>Retreat</option>
-              </select>
-            </div>
-            <div class="field">
-              <label>Type</label>
-              <select name="type">
-                <option value="custom">Custom</option>
-                <option value="conference">Conference</option>
-                <option value="special">Special</option>
-              </select>
-            </div>
-          </div>
-          <button class="btn btn-primary" type="submit">Add Activity</button>
-        </form>
-      </div>
-
-      <div class="card panel">
-        <div class="panel-head"><h3>Statutory Services</h3><span class="muted">Always available</span></div>
-        <div class="service-grid">
-          ${[...sundayPresets, midweekPreset].map(name => `
-            <div class="card service-card">
-              <h4>${name}</h4>
-              <p>Built-in service option in the attendance system.</p>
-              <span class="badge badge-primary">Statutory</span>
-            </div>
-          `).join('')}
+            </thead>
+            <tbody>
+              ${summary.length ? summary.map(row => `
+                <tr>
+                  <td>${fmtDate(row.event.date)}</td>
+                  <td>${escapeHtml(row.event.name)}</td>
+                  <td>${row.total}</td>
+                  <td>${row.own}</td>
+                </tr>
+              `).join('') : `<tr><td colspan="4">No service records yet.</td></tr>`}
+            </tbody>
+          </table>
         </div>
       </div>
-    </section>
-
-    <section class="card panel">
-      <div class="panel-head"><h3>All Services & Activities</h3><span class="muted">Attendance can be marked only by church admin</span></div>
-      <div class="table-wrap">
-        <table class="table">
-          <thead>
-            <tr><th>Title</th><th>Date</th><th>Category</th><th>Type</th><th>Attendance Count</th><th>Status</th></tr>
-          </thead>
-          <tbody>
-            ${services.map(service => `
-              <tr>
-                <td>${escapeHtml(service.title)}</td>
-                <td>${escapeHtml(service.date)}</td>
-                <td>${escapeHtml(service.category)}</td>
-                <td>${escapeHtml(service.type)}</td>
-                <td>${countServiceAttendance(service.id)}</td>
-                <td><span class="badge badge-success">Open</span></td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
+      <div class="card">
+        <h3>Birthdays Today</h3>
+        ${getBirthdaysToday().length ? getBirthdaysToday().map(item => `
+          <div class="member-item">
+            <div>
+              <strong>${escapeHtml(item.fullName)}</strong>
+              <div class="member-meta">${escapeHtml(item.phone)} • ${escapeHtml(getArea(item.areaId)?.name || 'No area')}</div>
+            </div>
+            <button class="btn tiny" data-message-single-member="${item.id}">Message</button>
+          </div>
+        `).join('') : `<div class="empty">No member birthdays today.</div>`}
       </div>
     </section>
   `;
 }
 
-function renderAttendancePage() {
-  const members = [...appState.db.members].sort((a, b) => a.fullName.localeCompare(b.fullName));
-  const serviceOptions = [...appState.db.services].sort((a, b) => (b.date + b.title).localeCompare(a.date + a.title));
-  const selectedServiceId = serviceOptions[0]?.id || '';
+function renderMembers() {
+  const user = state.session;
+  const visibleMembers = getMembersForUser(user).slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const areaOptions = state.db.areas;
+  const g12Pastors = state.db.users.filter(u => u.role === 'g12');
+  const canAdd = ['admin', 'bishop'].includes(user.role);
+
+  const listHtml = visibleMembers.map(member => {
+    const profile = getMemberProfile(member);
+    return `
+      <tr>
+        <td><button class="link-btn" data-open-member="${member.id}">${escapeHtml(member.fullName)}</button></td>
+        <td>${escapeHtml(profile.areaName)}</td>
+        <td>${escapeHtml(profile.g12Class)}</td>
+        <td><span class="badge ${profile.level === LEVELS.strong ? 'success' : profile.level === LEVELS.consistent ? 'warn' : ''}">${escapeHtml(profile.level)}</span></td>
+        <td>${profile.attendanceCount}</td>
+        <td>${fmtDate(member.createdAt)}</td>
+        <td>${escapeHtml(member.phone)}</td>
+      </tr>
+    `;
+  }).join('');
 
   return `
-    <section class="section-head">
-      <div>
-        <h2>Attendance Marking</h2>
-        <p>Only church admin can mark attendance. Pastors have read-only visibility.</p>
+    <section class="two-col">
+      <div class="card">
+        <h3>${canAdd ? 'Add Member' : 'Member Filters'}</h3>
+        ${canAdd ? `
+          <form id="memberForm" class="form-grid">
+            <div class="field"><label>Full Name</label><input name="fullName" required /></div>
+            <div class="field"><label>Phone Number</label><input name="phone" required /></div>
+            <div class="field" style="grid-column:1/-1;"><label>Address</label><input name="address" required /></div>
+            <div class="field"><label>Birthday</label><input type="date" name="birthday" /></div>
+            ${user.role === 'admin' ? `
+              <div class="field"><label>Area (optional)</label><select name="areaId"><option value="">No area yet</option>${areaOptions.map(a => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join('')}</select></div>
+            ` : `
+              <div class="field"><label>Area</label><input value="${escapeHtml(getArea(user.areaId)?.name || '')}" disabled /></div>
+            `}
+            <div class="inline-actions" style="grid-column:1/-1;"><button class="btn" type="submit">Save Member</button></div>
+          </form>
+        ` : `
+          <div class="notice">Ordained pastors and G12 pastors cannot add members directly. G12 pastors can still assign members to their class below.</div>
+        `}
       </div>
-    </section>
-
-    <section class="card panel stack">
-      <div class="panel-head"><h3>Mark Attendance by Service</h3><span class="muted">Select a service, then tick members who attended</span></div>
-      ${serviceOptions.length ? `
-        <div class="search-row">
-          <div class="field">
-            <label>Select Service / Activity</label>
-            <select id="attendance-service-select">
-              ${serviceOptions.map(service => `<option value="${service.id}">${escapeHtml(service.title)} — ${escapeHtml(service.date)}</option>`).join('')}
+      <div class="card">
+        <h3>Filter Members</h3>
+        <div class="toolbar">
+          <div class="field"><label>Added From</label><input id="memberDateFrom" type="date" /></div>
+          <div class="field"><label>Added To</label><input id="memberDateTo" type="date" /></div>
+          <div class="field"><label>Search Name</label><input id="memberSearch" placeholder="Search members" /></div>
+          <div class="field"><label>Level</label>
+            <select id="memberLevelFilter">
+              <option value="">All levels</option>
+              <option value="${LEVELS.new}">${LEVELS.new}</option>
+              <option value="${LEVELS.consistent}">${LEVELS.consistent}</option>
+              <option value="${LEVELS.strong}">${LEVELS.strong}</option>
             </select>
           </div>
-          <div class="field">
-            <label>Search Member</label>
-            <input id="attendance-search" placeholder="Search by name">
-          </div>
-          <div class="field">
-            <label>Quick Action</label>
-            <button id="mark-visible-btn" class="btn btn-primary" type="button">Mark Visible Members</button>
-          </div>
         </div>
-
-        <div id="attendance-list-wrap">${renderAttendanceList(selectedServiceId, '')}</div>
-      ` : '<div class="empty-state">Create a service first before marking attendance.</div>'}
-    </section>
-  `;
-}
-
-function renderAttendanceList(serviceId, query) {
-  const members = [...appState.db.members]
-    .filter(member => member.fullName.toLowerCase().includes(query.toLowerCase()))
-    .sort((a, b) => a.fullName.localeCompare(b.fullName));
-
-  if (!members.length) return '<div class="empty-state">No matching members found.</div>';
-
-  return `
-    <div class="table-wrap">
-      <table class="table">
-        <thead>
-          <tr><th>Mark</th><th>Name</th><th>Phone</th><th>Address</th><th>G12 Class</th><th>Already Marked</th></tr>
-        </thead>
-        <tbody>
-          ${members.map(member => {
-            const marked = isAttendanceMarked(serviceId, member.id);
-            return `
-              <tr>
-                <td><input type="checkbox" class="attendance-check" data-service-id="${serviceId}" data-member-id="${member.id}" ${marked ? 'checked' : ''}></td>
-                <td>${escapeHtml(member.fullName)}</td>
-                <td>${escapeHtml(member.phone)}</td>
-                <td>${escapeHtml(member.address)}</td>
-                <td>${groupName(member.groupId)}</td>
-                <td>${marked ? '<span class="badge badge-success">Yes</span>' : '<span class="badge badge-dark">No</span>'}</td>
-              </tr>
-            `;
-          }).join('')}
-        </tbody>
-      </table>
-    </div>
-  `;
-}
-
-function renderGroupsPage() {
-  const groups = [...appState.db.g12Groups];
-  return `
-    <section class="section-head">
-      <div>
-        <h2>G12 Groups</h2>
-        <p>Monitor all pastor-led classes and member allocations.</p>
+        <div class="footer-note">Use date range to follow up on members added within a particular period.</div>
       </div>
     </section>
 
-    <section class="card panel">
-      <div class="panel-head"><h3>All G12 Classes</h3><span class="muted">Members cannot belong to two classes</span></div>
-      ${groups.length ? `
-      <div class="table-wrap">
-        <table class="table">
-          <thead><tr><th>Class Name</th><th>Pastor</th><th>Members</th><th>Total Attendance</th></tr></thead>
-          <tbody>
-            ${groups.map(group => `
-              <tr>
-                <td>${escapeHtml(group.className)}</td>
-                <td>${escapeHtml(group.pastorName)}</td>
-                <td>${membersInGroup(group.id).length}</td>
-                <td>${groupAttendanceTotal(group.id)}</td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
-      </div>` : '<div class="empty-state">No G12 classes created yet.</div>'}
-    </section>
-  `;
-}
+    ${user.role === 'g12' ? renderG12Assignment(user) : ''}
 
-function renderReportsPage() {
-  const services = [...appState.db.services].sort((a, b) => (b.date + b.title).localeCompare(a.date + a.title));
-  return `
-    <section class="section-head">
-      <div>
-        <h2>Attendance Reports</h2>
-        <p>Quick service-level report across the church.</p>
+    <section class="card">
+      <div class="tabs">
+        ${['members','new','consistent','strong'].map(tab => `<button class="${state.memberTab===tab?'active':''}" data-member-tab="${tab}">${tab === 'members' ? 'All Members' : tab === 'new' ? 'New Members' : tab === 'consistent' ? 'Consistent New Timers' : 'Strong Members'}</button>`).join('')}
       </div>
-    </section>
-    <section class="card panel">
-      <div class="panel-head"><h3>Service Attendance Summary</h3><span class="muted">Totals for each service or activity</span></div>
       <div class="table-wrap">
-        <table class="table">
-          <thead><tr><th>Service</th><th>Date</th><th>Total Attendance</th><th>Assigned G12 Members Present</th><th>Unassigned Members Present</th></tr></thead>
-          <tbody>
-            ${services.map(service => {
-              const marks = appState.db.attendance.filter(item => item.serviceId === service.id);
-              const groupMembersPresent = marks.filter(item => memberById(item.memberId)?.groupId).length;
-              return `
-                <tr>
-                  <td>${escapeHtml(service.title)}</td>
-                  <td>${escapeHtml(service.date)}</td>
-                  <td>${marks.length}</td>
-                  <td>${groupMembersPresent}</td>
-                  <td>${marks.length - groupMembersPresent}</td>
-                </tr>
-              `;
-            }).join('')}
-          </tbody>
+        <table id="membersTable">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Area</th>
+              <th>G12 Class</th>
+              <th>Level</th>
+              <th>Attendance</th>
+              <th>Added</th>
+              <th>Phone</th>
+            </tr>
+          </thead>
+          <tbody>${listHtml || `<tr><td colspan="7">No members found.</td></tr>`}</tbody>
         </table>
       </div>
     </section>
   `;
 }
 
-function renderG12Dashboard(user) {
-  const group = groupByPastor(user.id);
-  const members = membersInGroup(group?.id);
-  const services = appState.db.services;
+function renderG12Assignment(user) {
+  const allMembers = state.db.members.slice().sort((a, b) => a.fullName.localeCompare(b.fullName));
   return `
-    <section class="section-head">
-      <div>
-        <h2>G12 Pastor Dashboard</h2>
-        <p>Read-only attendance visibility plus class management for your own group.</p>
-      </div>
-    </section>
-
-    <section class="kpi-grid">
-      <div class="card kpi"><small>Class Name</small><strong style="font-size:20px;">${escapeHtml(group?.className || user.className || 'Not set')}</strong><span>Named according to the pastor</span></div>
-      <div class="card kpi"><small>My Members</small><strong>${members.length}</strong><span>Members currently under your G12 class</span></div>
-      <div class="card kpi"><small>Total Services</small><strong>${services.length}</strong><span>All services visible to you</span></div>
-      <div class="card kpi"><small>My Attendance Marks</small><strong>${groupAttendanceTotal(group?.id)}</strong><span>Combined class attendance across services</span></div>
-    </section>
-
-    <section class="card panel">
-      <div class="panel-head"><h3>Attendance by Service</h3><span class="muted">How many of your G12 members attended each service</span></div>
-      ${renderG12ServiceTable(user)}
-    </section>
-  `;
-}
-
-function renderG12MembersPage(user) {
-  const group = groupByPastor(user.id);
-  const members = membersInGroup(group?.id);
-  return `
-    <section class="section-head">
-      <div>
-        <h2>My G12 Class</h2>
-        <p>Read-only list of members already assigned to your class.</p>
-      </div>
-    </section>
-    <section class="card panel">
-      <div class="panel-head"><h3>${escapeHtml(group?.className || user.className || 'My Class')}</h3><span class="muted">Members under your discipleship group</span></div>
-      ${members.length ? `
-      <div class="table-wrap">
-        <table class="table">
-          <thead><tr><th>Name</th><th>Phone</th><th>Address</th><th>Total Attendance</th></tr></thead>
-          <tbody>
-            ${members.map(member => `
-              <tr>
-                <td>${escapeHtml(member.fullName)}</td>
-                <td>${escapeHtml(member.phone)}</td>
-                <td>${escapeHtml(member.address)}</td>
-                <td>${countMemberAttendance(member.id)}</td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
-      </div>` : '<div class="empty-state">No members assigned to your class yet.</div>'}
-    </section>
-  `;
-}
-
-function renderG12AssignPage(user) {
-  const group = ensureGroupForUser(user);
-  const members = [...appState.db.members].sort((a, b) => a.fullName.localeCompare(b.fullName));
-  return `
-    <section class="section-head">
-      <div>
-        <h2>Assign Members to My G12 Class</h2>
-        <p>You can assign members from the general list to your class. A member already in another class cannot be added.</p>
-      </div>
-    </section>
-    <section class="two-col">
-      <div class="card panel">
-        <div class="panel-head"><h3>General Member List</h3><span class="muted">Pick available members only</span></div>
-        <div class="member-pick-list">
-          ${members.map(member => {
-            const assignedElsewhere = member.groupId && member.groupId !== group.id;
-            const assignedHere = member.groupId === group.id;
-            return `
-              <div class="pick-item ${assignedElsewhere ? 'disabled' : ''}">
-                <div class="pick-meta">
-                  <strong>${escapeHtml(member.fullName)}</strong>
-                  <span>${escapeHtml(member.phone)} · ${escapeHtml(member.address)}</span>
-                  <span>${assignedElsewhere ? 'Already belongs to ' + groupName(member.groupId) : assignedHere ? 'Already in your class' : 'Available to assign'}</span>
-                </div>
-                <div class="inline-actions">
-                  <button class="btn ${assignedHere ? 'btn-danger' : 'btn-primary'}" type="button" data-assign-member="${member.id}" ${assignedElsewhere ? 'disabled' : ''}>
-                    ${assignedHere ? 'Remove' : 'Assign'}
-                  </button>
-                </div>
+    <section class="card">
+      <h3>Manage ${escapeHtml(user.className || 'My G12 Class')}</h3>
+      <div class="member-list">
+        ${allMembers.map(member => {
+          const assignedUser = getUser(member.g12PastorId);
+          const locked = assignedUser && assignedUser.id !== user.id;
+          const checked = member.g12PastorId === user.id;
+          return `
+            <label class="member-item">
+              <div>
+                <strong>${escapeHtml(member.fullName)}</strong>
+                <div class="member-meta">${locked ? `Already belongs to ${escapeHtml(assignedUser.className || assignedUser.name)}` : checked ? 'Already in your class' : 'Available for assignment'}</div>
               </div>
+              <input type="checkbox" data-g12-member="${member.id}" ${checked ? 'checked' : ''} ${locked ? 'disabled' : ''} />
+            </label>
+          `;
+        }).join('')}
+      </div>
+    </section>
+  `;
+}
+
+function renderAreas() {
+  const user = state.session;
+  const canManage = user.role === 'admin';
+  const areas = state.db.areas.slice().sort((a, b) => a.name.localeCompare(b.name));
+  return `
+    <section class="two-col">
+      <div class="card">
+        <h3>${canManage ? 'Create Area' : 'Area Overview'}</h3>
+        ${canManage ? `
+          <form id="areaForm" class="form-grid single">
+            <div class="field"><label>Area Name</label><input name="name" required /></div>
+            <div class="field"><label>Bishop Name</label><input name="bishopName" required /></div>
+            <button class="btn" type="submit">Add Area</button>
+          </form>
+        ` : `<div class="notice">Only Church Admin can create areas. Bishops and pastors can review them here.</div>`}
+      </div>
+      <div class="card">
+        <h3>Area Performance</h3>
+        <div class="stat-list">
+          ${areas.map(area => {
+            const count = state.db.members.filter(m => m.areaId === area.id).length;
+            return `<div class="stat-row"><span>${escapeHtml(area.name)}</span><strong>${count} members</strong></div>`;
+          }).join('') || `<div class="empty">No areas yet.</div>`}
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Area</th><th>Bishop</th><th>Members</th><th>Created</th></tr>
+          </thead>
+          <tbody>
+            ${areas.length ? areas.map(area => `
+              <tr>
+                <td>${escapeHtml(area.name)}</td>
+                <td>${escapeHtml(area.bishopName)}</td>
+                <td>${state.db.members.filter(m => m.areaId === area.id).length}</td>
+                <td>${fmtDate(area.createdAt)}</td>
+              </tr>
+            `).join('') : `<tr><td colspan="4">No areas added yet.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function renderAttendance() {
+  const user = state.session;
+  const events = state.db.serviceEvents.slice().sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
+  const members = state.db.members.slice().sort((a, b) => a.fullName.localeCompare(b.fullName));
+
+  return `
+    <section class="two-col">
+      <div class="card">
+        <h3>Create / Open Service</h3>
+        ${user.role === 'admin' ? `
+          <form id="serviceForm" class="form-grid">
+            <div class="field"><label>Date</label><input type="date" name="date" value="${todayStr()}" required /></div>
+            <div class="field"><label>Service Type</label>
+              <select name="template">
+                ${STATIC_SERVICE_TYPES.map(type => `<option value="${escapeHtml(type)}">${escapeHtml(type)}</option>`).join('')}
+                <option value="custom">Custom Activity</option>
+              </select>
+            </div>
+            <div class="field hidden" data-custom-service-field style="grid-column:1/-1;"><label>Custom Service / Conference / Activity</label><input name="customName" placeholder="Enter custom activity name" /></div>
+            <div class="inline-actions" style="grid-column:1/-1;">
+              <button class="btn" type="submit">Create Event</button>
+            </div>
+          </form>
+        ` : `<div class="notice">Attendance marking is read-only for your role. Church Admin alone can create services and tick attendance.</div>`}
+      </div>
+      <div class="card">
+        <h3>Choose Event</h3>
+        <div class="field"><label>Open an existing event</label>
+          <select id="attendanceEventSelect">
+            <option value="">Select event</option>
+            ${events.map(event => `<option value="${event.id}">${escapeHtml(event.name)} — ${fmtDate(event.date)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="footer-note">Sunday shifts, midweek service, and all custom activities appear here.</div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div id="attendanceWorkspace">
+        <div class="empty">Select a service event above to mark or review attendance.</div>
+      </div>
+    </section>
+  `;
+}
+
+function renderAttendanceWorkspace(eventId) {
+  const event = state.db.serviceEvents.find(e => e.id === eventId);
+  if (!event) return `<div class="empty">Choose a valid service event.</div>`;
+  const user = state.session;
+  const attendees = state.db.attendance.filter(a => a.eventId === eventId);
+  const members = state.db.members.slice().sort((a, b) => a.fullName.localeCompare(b.fullName));
+  return `
+    <div class="two-col">
+      <div>
+        <h3>${escapeHtml(event.name)}</h3>
+        <p class="page-subtitle">${fmtDate(event.date)} • ${escapeHtml(event.category)}</p>
+        <div class="toolbar">
+          <div class="field"><label>Search Member</label><input id="attendanceSearch" placeholder="Search member name" /></div>
+          <div class="field"><label>Filter Area</label>
+            <select id="attendanceAreaFilter">
+              <option value="">All areas</option>
+              ${state.db.areas.map(area => `<option value="${area.id}">${escapeHtml(area.name)}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+        <div class="checklist" id="attendanceChecklist">
+          ${members.map(member => {
+            const checked = attendees.some(a => a.memberId === member.id);
+            return `
+              <label class="check-row" data-attendance-row data-name="${escapeHtml(member.fullName).toLowerCase()}" data-area="${member.areaId || ''}">
+                <div>
+                  <strong>${escapeHtml(member.fullName)}</strong>
+                  <div class="member-meta">${escapeHtml(getArea(member.areaId)?.name || 'No area')} • ${escapeHtml(getUser(member.g12PastorId)?.className || 'No G12 class')}</div>
+                </div>
+                ${user.role === 'admin'
+                  ? `<input type="checkbox" data-attendance-member="${member.id}" data-event="${event.id}" ${checked ? 'checked' : ''} />`
+                  : `<span class="badge ${checked ? 'success' : 'neutral'}">${checked ? 'Present' : 'Absent'}</span>`}
+              </label>
             `;
           }).join('')}
         </div>
       </div>
-      <div class="card panel">
-        <div class="panel-head"><h3>Class Details</h3><span class="muted">Editable class naming</span></div>
-        <form id="class-name-form" class="stack">
-          <div class="field">
-            <label>Pastor Name</label>
-            <input value="${escapeHtml(user.fullName)}" disabled>
+      <div>
+        <div class="card">
+          <h3>Attendance Summary</h3>
+          <div class="stat-list">
+            <div class="stat-row"><span>Total Attendance</span><strong>${attendees.length}</strong></div>
+            <div class="stat-row"><span>Attendees in a G12 Class</span><strong>${attendees.filter(a => getMember(a.memberId)?.g12PastorId).length}</strong></div>
+            <div class="stat-row"><span>Areas Represented</span><strong>${new Set(attendees.map(a => getMember(a.memberId)?.areaId).filter(Boolean)).size}</strong></div>
           </div>
-          <div class="field">
-            <label>Class Name</label>
-            <input name="className" value="${escapeHtml(group.className)}" required>
-          </div>
-          <button class="btn btn-primary" type="submit">Update Class Name</button>
-        </form>
-
-        <div style="height:16px"></div>
-        <div class="auth-note">
-          Default style follows your example like <b>Pastor Toby's Class</b>. You can rename your own class here.
         </div>
       </div>
+    </div>
+  `;
+}
+
+function renderMessages() {
+  const options = getAudienceOptions();
+  return `
+    <section class="two-col">
+      <div class="card">
+        <h3>Manual / Scheduled Message</h3>
+        <form id="messageForm" class="form-grid">
+          <div class="field">
+            <label>Audience Type</label>
+            <select name="audienceType" id="messageAudienceType">
+              <option value="everyone">Everyone</option>
+              <option value="area">Area</option>
+              <option value="g12">G12 Class</option>
+              <option value="single_member">One Member</option>
+              <option value="selected_members">Selected Members</option>
+              <option value="birthdays_today">Birthdays Today</option>
+              <option value="all_prospects">All Non Members</option>
+              <option value="single_prospect">One Non Member</option>
+              <option value="selected_prospects">Selected Non Members</option>
+            </select>
+          </div>
+          <div class="field hidden" data-message-area>
+            <label>Choose Area</label>
+            <select name="audienceId">${options.areas.map(a => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join('')}</select>
+          </div>
+          <div class="field hidden" data-message-g12>
+            <label>Choose G12 Class</label>
+            <select name="g12Id">${options.pastors.map(p => `<option value="${p.id}">${escapeHtml(p.className || p.name)}</option>`).join('')}</select>
+          </div>
+          <div class="field hidden" data-message-single-member>
+            <label>Choose Member</label>
+            <select name="memberId">${options.members.map(m => `<option value="${m.id}">${escapeHtml(m.fullName)}</option>`).join('')}</select>
+          </div>
+          <div class="field hidden" data-message-single-prospect>
+            <label>Choose Non Member</label>
+            <select name="prospectId">${options.prospects.map(p => `<option value="${p.id}">${escapeHtml(p.fullName)}</option>`).join('')}</select>
+          </div>
+          <div class="field hidden" data-message-selected-members style="grid-column:1/-1;">
+            <label>Select Members</label>
+            <div class="checklist" style="max-height:220px;">${options.members.map(m => `<label class="check-row"><span>${escapeHtml(m.fullName)}</span><input type="checkbox" name="selectedMemberIds" value="${m.id}" /></label>`).join('')}</div>
+          </div>
+          <div class="field hidden" data-message-selected-prospects style="grid-column:1/-1;">
+            <label>Select Non Members</label>
+            <div class="checklist" style="max-height:220px;">${options.prospects.map(p => `<label class="check-row"><span>${escapeHtml(p.fullName)}</span><input type="checkbox" name="selectedProspectIds" value="${p.id}" /></label>`).join('')}</div>
+          </div>
+          <div class="field" style="grid-column:1/-1;">
+            <label>Message</label>
+            <textarea name="message" placeholder="Use {name} to personalise the message." required></textarea>
+          </div>
+          <div class="field"><label>Schedule Date (optional)</label><input type="date" name="scheduleDate" /></div>
+          <div class="field"><label>Yearly Repeat</label>
+            <select name="yearly"><option value="false">No</option><option value="true">Yes</option></select>
+          </div>
+          <div class="inline-actions" style="grid-column:1/-1;">
+            <button class="btn" type="submit">Send Now</button>
+            <button class="btn secondary" type="button" id="saveMessageRuleBtn">Save as Scheduled Rule</button>
+          </div>
+        </form>
+      </div>
+      <div class="card">
+        <h3>How WhatsApp Works Here</h3>
+        <div class="notice">Because GitHub Pages is static, the app prepares and opens WhatsApp chats with the right text and audience. Scheduled and automated campaigns become due inside the app and can be sent instantly when you open it.</div>
+        <div class="message-preview">Supported audiences: one person, selected names, G12 class, area, everyone, birthdays today, and all non members.</div>
+      </div>
     </section>
   `;
 }
 
-function renderG12ServicesPage(user) {
+function renderProspects() {
+  const user = state.session;
+  const areas = state.db.areas;
+  const prospects = (user.role === 'bishop'
+    ? state.db.prospects.filter(p => p.areaId === user.areaId)
+    : state.db.prospects)
+    .slice()
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+
   return `
-    <section class="section-head">
+    <section class="two-col">
+      <div class="card">
+        <h3>Add Non Member / Prospect</h3>
+        <form id="prospectForm" class="form-grid">
+          <div class="field"><label>Full Name</label><input name="fullName" required /></div>
+          <div class="field"><label>Phone Number</label><input name="phone" required /></div>
+          <div class="field" style="grid-column:1/-1;"><label>Address</label><input name="address" /></div>
+          <div class="field"><label>Birthday</label><input type="date" name="birthday" /></div>
+          <div class="field"><label>Area (optional)</label><select name="areaId"><option value="">No area</option>${areas.map(a => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join('')}</select></div>
+          <div class="inline-actions" style="grid-column:1/-1;"><button class="btn" type="submit">Save Prospect</button></div>
+        </form>
+      </div>
+      <div class="card">
+        <h3>Prospecting Note</h3>
+        <div class="notice">This separate list is for people the church is still following up and prospecting. They can still receive manual, scheduled, holiday, and birthday WhatsApp messages.</div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Name</th><th>Area</th><th>Phone</th><th>Birthday</th><th>Added</th><th>Message</th></tr></thead>
+          <tbody>
+            ${prospects.length ? prospects.map(p => `
+              <tr>
+                <td>${escapeHtml(p.fullName)}</td>
+                <td>${escapeHtml(getArea(p.areaId)?.name || 'No area')}</td>
+                <td>${escapeHtml(p.phone || '—')}</td>
+                <td>${fmtDate(p.birthday)}</td>
+                <td>${fmtDate(p.createdAt)}</td>
+                <td><button class="btn tiny" data-message-single-prospect="${p.id}">Message</button></td>
+              </tr>
+            `).join('') : `<tr><td colspan="6">No non members yet.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function renderBirthdays() {
+  const members = getBirthdaysToday();
+  const prospects = getBirthdaysToday('prospects');
+  return `
+    <section class="three-col">
+      <div class="card">
+        <h3>Member Birthdays Today</h3>
+        ${members.length ? members.map(member => `
+          <div class="member-item">
+            <div>
+              <strong>${escapeHtml(member.fullName)}</strong>
+              <div class="member-meta">${escapeHtml(member.phone)} • ${escapeHtml(getArea(member.areaId)?.name || 'No area')}</div>
+            </div>
+            <button class="btn tiny" data-message-single-member="${member.id}">Message</button>
+          </div>
+        `).join('') : `<div class="empty">No member birthdays today.</div>`}
+      </div>
+      <div class="card">
+        <h3>Non Member Birthdays Today</h3>
+        ${prospects.length ? prospects.map(person => `
+          <div class="member-item">
+            <div>
+              <strong>${escapeHtml(person.fullName)}</strong>
+              <div class="member-meta">${escapeHtml(person.phone)} • ${escapeHtml(getArea(person.areaId)?.name || 'No area')}</div>
+            </div>
+            <button class="btn tiny" data-message-single-prospect="${person.id}">Message</button>
+          </div>
+        `).join('') : `<div class="empty">No non member birthdays today.</div>`}
+      </div>
+      <div class="card">
+        <h3>Quick Actions</h3>
+        <div class="inline-actions">
+          <button class="btn" data-quick-birthday="members">Message All Members</button>
+          <button class="btn secondary" data-quick-birthday="prospects">Message All Non Members</button>
+        </div>
+        <p class="footer-note">Birthday automation rules can also send these messages when they become due.</p>
+      </div>
+    </section>
+  `;
+}
+
+function renderAutomation() {
+  const rules = state.db.messageRules.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return `
+    <section class="card">
+      <h3>Saved Rules</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Title</th><th>Type</th><th>Audience</th><th>Schedule</th><th>Yearly</th><th>Action</th></tr></thead>
+          <tbody>
+            ${rules.length ? rules.map(rule => `
+              <tr>
+                <td>${escapeHtml(rule.title)}</td>
+                <td>${escapeHtml(rule.type)}</td>
+                <td>${escapeHtml(rule.audienceType.replaceAll('_',' '))}</td>
+                <td>${rule.type === 'holiday' && rule.title.toLowerCase().includes('easter') ? 'Easter (auto-computed)' : escapeHtml(rule.scheduleDate || 'Birthday / Dynamic')}</td>
+                <td>${rule.yearly ? 'Yes' : 'No'}</td>
+                <td><button class="btn tiny" data-run-rule="${rule.id}">Run</button></td>
+              </tr>
+            `).join('') : `<tr><td colspan="6">No automation rules saved yet.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="two-col">
+      <div class="card">
+        <h3>Quick Holiday Rules</h3>
+        <div class="inline-actions">
+          <button class="btn" data-add-holiday="Christmas">Add Christmas Rule</button>
+          <button class="btn secondary" data-add-holiday="Easter">Add Easter Rule</button>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Engine Note</h3>
+        <div class="notice">Birthday, holiday, and scheduled rules are stored in the app. When the app is opened, due rules can be run instantly through WhatsApp links.</div>
+      </div>
+    </section>
+  `;
+}
+
+function renderMemberModal() {
+  const member = getMember(state.modalMemberId);
+  if (!member) return '';
+  const profile = getMemberProfile(member);
+  return `
+    <div class="modal-header">
       <div>
-        <h2>Services Attendance Insight</h2>
-        <p>Read-only service level insight for your own class.</p>
+        <h3>${escapeHtml(profile.fullName)}</h3>
+        <p class="page-subtitle">Member Details</p>
       </div>
-    </section>
-    <section class="card panel">
-      <div class="panel-head"><h3>My Class Attendance by Service</h3><span class="muted">Total church attendance versus your class attendance</span></div>
-      ${renderG12ServiceTable(user, true)}
-    </section>
-  `;
-}
-
-function renderG12ServiceTable(user, compare = false) {
-  const group = groupByPastor(user.id);
-  const services = [...appState.db.services].sort((a, b) => (b.date + b.title).localeCompare(a.date + a.title));
-  return `
-    <div class="table-wrap">
-      <table class="table">
-        <thead><tr><th>Service</th><th>Date</th>${compare ? '<th>Total Church Attendance</th>' : ''}<th>My Class Attendance</th></tr></thead>
-        <tbody>
-          ${services.map(service => `
-            <tr>
-              <td>${escapeHtml(service.title)}</td>
-              <td>${escapeHtml(service.date)}</td>
-              ${compare ? `<td>${countServiceAttendance(service.id)}</td>` : ''}
-              <td>${groupServiceAttendance(group?.id, service.id)}</td>
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>
+      <button class="btn tiny secondary" data-close-member-modal>Close</button>
+    </div>
+    <div class="modal-body">
+      <section class="three-col">
+        <div class="metric"><span>Area</span><strong style="font-size:18px;">${escapeHtml(profile.areaName)}</strong></div>
+        <div class="metric"><span>G12 Class</span><strong style="font-size:18px;">${escapeHtml(profile.g12Class)}</strong></div>
+        <div class="metric"><span>Level</span><strong style="font-size:18px;">${escapeHtml(profile.level)}</strong></div>
+      </section>
+      <section class="card" style="margin-top:16px;">
+        <div class="stat-list">
+          <div class="stat-row"><span>Phone Number</span><strong>${escapeHtml(profile.phone)}</strong></div>
+          <div class="stat-row"><span>Address</span><strong>${escapeHtml(profile.address)}</strong></div>
+          <div class="stat-row"><span>Birthday</span><strong>${fmtDate(profile.birthday)}</strong></div>
+          <div class="stat-row"><span>Attendance Count</span><strong>${profile.attendanceCount}</strong></div>
+          <div class="stat-row"><span>Date Added</span><strong>${fmtDateTime(profile.createdAt)}</strong></div>
+        </div>
+      </section>
     </div>
   `;
 }
 
-function renderOrdainedDashboard() {
-  const totalAttendance = appState.db.attendance.length;
-  return `
-    <section class="section-head">
-      <div>
-        <h2>Ordained Pastor Dashboard</h2>
-        <p>Read-only overview of member, group and attendance activity.</p>
-      </div>
-    </section>
-    <section class="kpi-grid">
-      <div class="card kpi"><small>Total Members</small><strong>${appState.db.members.length}</strong><span>All registered members</span></div>
-      <div class="card kpi"><small>Total Services</small><strong>${appState.db.services.length}</strong><span>All church services and activities</span></div>
-      <div class="card kpi"><small>Total Attendance</small><strong>${totalAttendance}</strong><span>All attendance marks church-wide</span></div>
-      <div class="card kpi"><small>G12 Classes</small><strong>${appState.db.g12Groups.length}</strong><span>Visible for oversight</span></div>
-    </section>
-    <section class="card panel">
-      <div class="panel-head"><h3>Recent Attendance Summary</h3><span class="muted">Read-only service attendance list</span></div>
-      ${renderReadonlyServicesTable()}
-    </section>
-  `;
-}
+function bindAppEvents() {
+  qq('[data-nav]').forEach(btn => btn.addEventListener('click', () => {
+    state.view = btn.dataset.nav;
+    state.mobileNavOpen = false;
+    render();
+  }));
 
-function renderReadonlyMembers() {
-  return `
-    <section class="section-head"><div><h2>Members</h2><p>Read-only access to the church member database.</p></div></section>
-    <section class="card panel">${readonlyMembersTable()}</section>
-  `;
-}
-
-function renderReadonlyServices() {
-  return `
-    <section class="section-head"><div><h2>Services</h2><p>Read-only access to church attendance by service.</p></div></section>
-    <section class="card panel">${renderReadonlyServicesTable()}</section>
-  `;
-}
-
-function renderReadonlyGroups() {
-  return `
-    <section class="section-head"><div><h2>G12 Groups</h2><p>View pastor-led classes and their attendance totals.</p></div></section>
-    <section class="card panel">${readonlyGroupsTable()}</section>
-  `;
-}
-
-function readonlyMembersTable() {
-  const members = [...appState.db.members].sort((a, b) => a.fullName.localeCompare(b.fullName));
-  return members.length ? `
-    <div class="table-wrap">
-      <table class="table">
-        <thead><tr><th>Name</th><th>Phone</th><th>Address</th><th>Class</th><th>Total Attendance</th></tr></thead>
-        <tbody>
-          ${members.map(member => `
-            <tr>
-              <td>${escapeHtml(member.fullName)}</td>
-              <td>${escapeHtml(member.phone)}</td>
-              <td>${escapeHtml(member.address)}</td>
-              <td>${groupName(member.groupId)}</td>
-              <td>${countMemberAttendance(member.id)}</td>
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>
-    </div>` : '<div class="empty-state">No members available.</div>';
-}
-
-function renderReadonlyServicesTable() {
-  const services = [...appState.db.services].sort((a, b) => (b.date + b.title).localeCompare(a.date + a.title));
-  return `
-    <div class="table-wrap">
-      <table class="table">
-        <thead><tr><th>Service</th><th>Date</th><th>Category</th><th>Total Attendance</th></tr></thead>
-        <tbody>
-          ${services.map(service => `
-            <tr>
-              <td>${escapeHtml(service.title)}</td>
-              <td>${escapeHtml(service.date)}</td>
-              <td>${escapeHtml(service.category)}</td>
-              <td>${countServiceAttendance(service.id)}</td>
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>
-    </div>
-  `;
-}
-
-function readonlyGroupsTable() {
-  const groups = appState.db.g12Groups;
-  return groups.length ? `
-    <div class="table-wrap">
-      <table class="table">
-        <thead><tr><th>Class Name</th><th>Pastor</th><th>Members</th><th>Total Attendance</th></tr></thead>
-        <tbody>
-          ${groups.map(group => `
-            <tr>
-              <td>${escapeHtml(group.className)}</td>
-              <td>${escapeHtml(group.pastorName)}</td>
-              <td>${membersInGroup(group.id).length}</td>
-              <td>${groupAttendanceTotal(group.id)}</td>
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>
-    </div>
-  ` : '<div class="empty-state">No groups created yet.</div>';
-}
-
-function serviceCard(service) {
-  return `
-    <div class="card service-card">
-      <h4>${escapeHtml(service.title)}</h4>
-      <p>${escapeHtml(service.date)} · ${escapeHtml(service.category)}</p>
-      <div class="inline-actions">
-        <span class="badge ${service.type === 'statutory' ? 'badge-primary' : 'badge-warning'}">${escapeHtml(service.type)}</span>
-        <span class="badge badge-success">${countServiceAttendance(service.id)} present</span>
-      </div>
-    </div>
-  `;
-}
-
-function renderToast() {
-  return appState.toast ? `<div class="toast">${escapeHtml(appState.toast)}</div>` : '';
-}
-
-function bindEvents() {
-  document.querySelectorAll('[data-auth-mode]').forEach(btn => {
-    btn.onclick = () => {
-      appState.authMode = btn.dataset.authMode;
-      render();
-    };
+  q('[data-action="logout"]').addEventListener('click', () => {
+    clearSession();
+    render();
   });
 
-  const roleSelect = document.getElementById('signup-role-select');
-  if (roleSelect) {
-    const classField = document.getElementById('class-name-field');
-    const toggleClassField = () => classField.style.display = roleSelect.value === 'g12' ? 'grid' : 'none';
-    toggleClassField();
-    roleSelect.onchange = toggleClassField;
-  }
+  q('[data-action="check-automation"]').addEventListener('click', () => runDailyAutomationCheck(true));
 
-  const loginForm = document.getElementById('login-form');
-  if (loginForm) {
-    loginForm.onsubmit = (e) => {
-      e.preventDefault();
-      const data = new FormData(loginForm);
-      const username = String(data.get('username')).trim();
-      const password = String(data.get('password')).trim();
-      const user = appState.db.users.find(u => u.username === username && u.password === password);
-      if (!user) return showToast('Invalid login details.');
-      setSession(user);
-      showToast('Signed in successfully.');
-    };
-  }
-
-  const signupForm = document.getElementById('signup-form');
-  if (signupForm) {
-    signupForm.onsubmit = (e) => {
-      e.preventDefault();
-      const data = new FormData(signupForm);
-      const username = String(data.get('username')).trim();
-      if (appState.db.users.some(u => u.username.toLowerCase() === username.toLowerCase())) {
-        return showToast('Username already exists.');
-      }
-      const role = String(data.get('role'));
-      const user = {
-        id: uid(),
-        fullName: String(data.get('fullName')).trim(),
-        username,
-        password: String(data.get('password')).trim(),
-        role,
-        className: null
-      };
-      if (role === 'g12') {
-        const className = String(data.get('className')).trim() || `${user.fullName}'s Class`;
-        user.className = className;
-        appState.db.g12Groups.push({ id: uid(), pastorId: user.id, pastorName: user.fullName, className, createdAt: todayDate() });
-      }
-      appState.db.users.push(user);
-      saveDB();
-      appState.authMode = 'login';
-      render();
-      showToast('Account created successfully. You can now sign in.');
-    };
-  }
-
-  const logoutBtn = document.getElementById('logout-btn');
-  if (logoutBtn) logoutBtn.onclick = logout;
-
-  document.querySelectorAll('[data-screen]').forEach(btn => {
-    btn.onclick = () => {
-      appState.session.screen = btn.dataset.screen;
-      render();
-    };
+  const toggleBtn = q('[data-action="toggle-nav"]');
+  if (toggleBtn) toggleBtn.addEventListener('click', () => {
+    state.mobileNavOpen = !state.mobileNavOpen;
+    render();
   });
 
-  document.querySelectorAll('[data-screen-jump]').forEach(btn => {
-    btn.onclick = () => {
-      appState.session.screen = btn.dataset.screenJump;
+  q('#memberModal')?.addEventListener('click', (e) => {
+    if (e.target.id === 'memberModal') {
+      state.modalMemberId = null;
       render();
-    };
+    }
+  });
+  q('[data-close-member-modal]')?.addEventListener('click', () => {
+    state.modalMemberId = null;
+    render();
   });
 
-  const memberForm = document.getElementById('member-form');
-  if (memberForm) {
-    memberForm.onsubmit = (e) => {
-      e.preventDefault();
-      const data = new FormData(memberForm);
-      appState.db.members.push({
-        id: uid(),
-        fullName: String(data.get('fullName')).trim(),
-        phone: String(data.get('phone')).trim(),
-        address: String(data.get('address')).trim(),
-        groupId: null,
-        createdAt: todayDate()
-      });
-      saveDB();
-      render();
-      showToast('Member added successfully.');
-    };
-  }
+  q('#memberForm')?.addEventListener('submit', handleAddMember);
+  q('#areaForm')?.addEventListener('submit', handleAddArea);
+  q('#serviceForm')?.addEventListener('submit', handleCreateService);
+  q('#prospectForm')?.addEventListener('submit', handleAddProspect);
+  q('#messageForm')?.addEventListener('submit', handleSendMessageNow);
+  q('#saveMessageRuleBtn')?.addEventListener('click', handleSaveMessageRule);
 
-  const serviceForm = document.getElementById('service-form');
-  if (serviceForm) {
-    serviceForm.onsubmit = (e) => {
-      e.preventDefault();
-      const data = new FormData(serviceForm);
-      appState.db.services.unshift({
-        id: uid(),
-        title: String(data.get('title')).trim(),
-        date: String(data.get('date')).trim(),
-        category: String(data.get('category')).trim(),
-        type: String(data.get('type')).trim(),
-        createdBy: appState.session.user.id
-      });
-      saveDB();
-      render();
-      showToast('Service or custom activity created.');
-    };
-  }
+  q('#messageAudienceType')?.addEventListener('change', syncMessageAudienceVisibility);
+  syncMessageAudienceVisibility();
 
-  const attendanceSelect = document.getElementById('attendance-service-select');
-  const attendanceSearch = document.getElementById('attendance-search');
-  const attendanceListWrap = document.getElementById('attendance-list-wrap');
-  if (attendanceSelect && attendanceSearch && attendanceListWrap) {
-    const syncList = () => {
-      attendanceListWrap.innerHTML = renderAttendanceList(attendanceSelect.value, attendanceSearch.value);
-      bindAttendanceCheckboxes();
-    };
-    attendanceSelect.onchange = syncList;
-    attendanceSearch.oninput = syncList;
-    syncList();
-  }
-
-  const markVisibleBtn = document.getElementById('mark-visible-btn');
-  if (markVisibleBtn && attendanceSelect && attendanceSearch) {
-    markVisibleBtn.onclick = () => {
-      const filtered = appState.db.members.filter(member => member.fullName.toLowerCase().includes(attendanceSearch.value.toLowerCase()));
-      filtered.forEach(member => markAttendance(attendanceSelect.value, member.id, true, false));
-      saveDB();
-      const wrap = document.getElementById('attendance-list-wrap');
-      if (wrap) wrap.innerHTML = renderAttendanceList(attendanceSelect.value, attendanceSearch.value);
-      bindAttendanceCheckboxes();
-      showToast('Visible members marked present.');
-    };
-  }
-
-  document.querySelectorAll('[data-assign-member]').forEach(btn => {
-    btn.onclick = () => {
-      const memberId = btn.dataset.assignMember;
-      toggleGroupAssignment(appState.session.user.id, memberId);
-    };
+  q('select[name="template"]')?.addEventListener('change', (e) => {
+    q('[data-custom-service-field]')?.classList.toggle('hidden', e.target.value !== 'custom');
   });
 
-  const classNameForm = document.getElementById('class-name-form');
-  if (classNameForm) {
-    classNameForm.onsubmit = (e) => {
-      e.preventDefault();
-      const form = new FormData(classNameForm);
-      const className = String(form.get('className')).trim();
-      updateClassName(appState.session.user.id, className);
-    };
-  }
+  q('#attendanceEventSelect')?.addEventListener('change', (e) => {
+    q('#attendanceWorkspace').innerHTML = renderAttendanceWorkspace(e.target.value);
+    bindAttendanceWorkspace();
+  });
+
+  qq('[data-open-member]').forEach(btn => btn.addEventListener('click', () => {
+    state.modalMemberId = btn.dataset.openMember;
+    render();
+  }));
+
+  qq('[data-g12-member]').forEach(box => box.addEventListener('change', handleG12Assignment));
+  qq('[data-member-tab]').forEach(btn => btn.addEventListener('click', () => {
+    state.memberTab = btn.dataset.memberTab;
+    applyMemberFilters();
+    qq('[data-member-tab]').forEach(b => b.classList.toggle('active', b === btn));
+  }));
+
+  ['#memberDateFrom', '#memberDateTo', '#memberSearch', '#memberLevelFilter'].forEach(sel => {
+    q(sel)?.addEventListener('input', applyMemberFilters);
+    q(sel)?.addEventListener('change', applyMemberFilters);
+  });
+  applyMemberFilters();
+
+  qq('[data-message-single-member]').forEach(btn => btn.addEventListener('click', () => {
+    state.view = 'messages';
+    render();
+    setTimeout(() => {
+      q('#messageAudienceType').value = 'single_member';
+      syncMessageAudienceVisibility();
+      q('select[name="memberId"]').value = btn.dataset.messageSingleMember;
+      q('textarea[name="message"]').value = 'Hello {name}, we are glad to have you with us at Refiners City International Church.';
+    }, 0);
+  }));
+
+  qq('[data-message-single-prospect]').forEach(btn => btn.addEventListener('click', () => {
+    state.view = 'messages';
+    render();
+    setTimeout(() => {
+      q('#messageAudienceType').value = 'single_prospect';
+      syncMessageAudienceVisibility();
+      q('select[name="prospectId"]').value = btn.dataset.messageSingleProspect;
+      q('textarea[name="message"]').value = 'Hello {name}, we would love to welcome you again to Refiners City International Church.';
+    }, 0);
+  }));
+
+  qq('[data-run-rule]').forEach(btn => btn.addEventListener('click', () => runRuleNow(btn.dataset.runRule)));
+  qq('[data-quick-birthday]').forEach(btn => btn.addEventListener('click', () => {
+    const targets = getBirthdaysToday(btn.dataset.quickBirthday);
+    const message = 'Happy Birthday {name}. Refiners City International Church celebrates you today.';
+    openWhatsappForTargets(targets, message);
+  }));
+  qq('[data-add-holiday]').forEach(btn => btn.addEventListener('click', () => addHolidayRule(btn.dataset.addHoliday)));
 }
 
-function bindAttendanceCheckboxes() {
-  document.querySelectorAll('.attendance-check').forEach(input => {
-    input.onchange = () => {
-      markAttendance(input.dataset.serviceId, input.dataset.memberId, input.checked, true);
-    };
+function handleAddMember(event) {
+  event.preventDefault();
+  const user = state.session;
+  const fd = new FormData(event.target);
+  const member = {
+    id: uid('member'),
+    fullName: String(fd.get('fullName')).trim(),
+    phone: String(fd.get('phone')).trim(),
+    address: String(fd.get('address')).trim(),
+    birthday: String(fd.get('birthday') || ''),
+    areaId: user.role === 'bishop' ? user.areaId : String(fd.get('areaId') || ''),
+    g12PastorId: '',
+    createdAt: nowStr(),
+    createdByUserId: user.id,
+  };
+  state.db.members.push(member);
+  saveDb();
+  event.target.reset();
+  alert('Member added successfully.');
+  render();
+}
+
+function handleAddArea(event) {
+  event.preventDefault();
+  const fd = new FormData(event.target);
+  state.db.areas.push({
+    id: uid('area'),
+    name: String(fd.get('name')).trim(),
+    bishopName: String(fd.get('bishopName')).trim(),
+    createdAt: nowStr(),
   });
+  saveDb();
+  event.target.reset();
+  alert('Area created successfully.');
+  render();
 }
 
-function markAttendance(serviceId, memberId, checked, notify) {
-  const existingIndex = appState.db.attendance.findIndex(item => item.serviceId === serviceId && item.memberId === memberId);
-  if (checked && existingIndex === -1) {
-    appState.db.attendance.push({ id: uid(), serviceId, memberId, markedAt: new Date().toISOString(), markedBy: appState.session.user.id });
+function handleCreateService(event) {
+  event.preventDefault();
+  const fd = new FormData(event.target);
+  const template = String(fd.get('template'));
+  const customName = String(fd.get('customName') || '').trim();
+  const name = template === 'custom' ? customName : template;
+  if (!name) {
+    alert('Enter the custom service or activity name.');
+    return;
   }
-  if (!checked && existingIndex !== -1) {
-    appState.db.attendance.splice(existingIndex, 1);
-  }
-  saveDB();
-  const serviceIdEl = document.getElementById('attendance-service-select');
-  const searchEl = document.getElementById('attendance-search');
-  const wrap = document.getElementById('attendance-list-wrap');
-  if (serviceIdEl && searchEl && wrap) {
-    wrap.innerHTML = renderAttendanceList(serviceIdEl.value, searchEl.value);
-    bindAttendanceCheckboxes();
-  }
-  if (notify) showToast(checked ? 'Attendance marked.' : 'Attendance removed.');
+  const category = template === 'custom'
+    ? 'Custom'
+    : template.startsWith('Sunday')
+      ? 'Sunday'
+      : 'Midweek';
+  const eventObj = {
+    id: uid('event'),
+    name,
+    category,
+    date: String(fd.get('date')),
+    custom: template === 'custom',
+    createdAt: nowStr(),
+    createdByUserId: state.session.id,
+  };
+  state.db.serviceEvents.push(eventObj);
+  saveDb();
+  alert('Service event created. Select it from the list to mark attendance.');
+  render();
 }
 
-function toggleGroupAssignment(pastorId, memberId) {
-  const group = ensureGroupForUser(userById(pastorId));
-  const member = memberById(memberId);
+function handleAddProspect(event) {
+  event.preventDefault();
+  const fd = new FormData(event.target);
+  state.db.prospects.push({
+    id: uid('prospect'),
+    fullName: String(fd.get('fullName')).trim(),
+    phone: String(fd.get('phone')).trim(),
+    address: String(fd.get('address')).trim(),
+    birthday: String(fd.get('birthday') || ''),
+    areaId: String(fd.get('areaId') || ''),
+    createdAt: nowStr(),
+  });
+  saveDb();
+  event.target.reset();
+  alert('Non member saved.');
+  render();
+}
+
+function handleG12Assignment(event) {
+  const member = getMember(event.target.dataset.g12Member);
   if (!member) return;
-  if (member.groupId && member.groupId !== group.id) {
-    return showToast('This member already belongs to a different G12 class.');
-  }
-  member.groupId = member.groupId === group.id ? null : group.id;
-  saveDB();
+  member.g12PastorId = event.target.checked ? state.session.id : '';
+  saveDb();
   render();
-  showToast(member.groupId ? 'Member assigned to your class.' : 'Member removed from your class.');
 }
 
-function updateClassName(pastorId, className) {
-  const group = ensureGroupForUser(userById(pastorId));
-  group.className = className;
-  group.pastorName = userById(pastorId).fullName;
-  const user = userById(pastorId);
-  if (user) user.className = className;
-  saveDB();
-  render();
-  showToast('Class name updated successfully.');
+function bindAttendanceWorkspace() {
+  qq('[data-attendance-member]').forEach(box => box.addEventListener('change', handleAttendanceToggle));
+  q('#attendanceSearch')?.addEventListener('input', applyAttendanceFilters);
+  q('#attendanceAreaFilter')?.addEventListener('change', applyAttendanceFilters);
 }
 
-function ensureGroupForUser(user) {
-  let group = groupByPastor(user.id);
-  if (!group) {
-    group = {
-      id: uid(),
-      pastorId: user.id,
-      pastorName: user.fullName,
-      className: user.className || `${user.fullName}'s Class`,
-      createdAt: todayDate()
-    };
-    appState.db.g12Groups.push(group);
-    saveDB();
+function handleAttendanceToggle(event) {
+  const memberId = event.target.dataset.attendanceMember;
+  const eventId = event.target.dataset.event;
+  const existing = state.db.attendance.find(a => a.memberId === memberId && a.eventId === eventId);
+  if (event.target.checked && !existing) {
+    state.db.attendance.push({ id: uid('att'), memberId, eventId, markedByUserId: state.session.id, createdAt: nowStr() });
   }
-  return group;
+  if (!event.target.checked && existing) {
+    state.db.attendance = state.db.attendance.filter(a => !(a.memberId === memberId && a.eventId === eventId));
+  }
+  saveDb();
+  q('#attendanceWorkspace').innerHTML = renderAttendanceWorkspace(eventId);
+  bindAttendanceWorkspace();
 }
 
-function todayDate() {
-  return new Date().toISOString().slice(0, 10);
+function applyAttendanceFilters() {
+  const search = q('#attendanceSearch')?.value.trim().toLowerCase() || '';
+  const area = q('#attendanceAreaFilter')?.value || '';
+  qq('[data-attendance-row]').forEach(row => {
+    const matchSearch = !search || row.dataset.name.includes(search);
+    const matchArea = !area || row.dataset.area === area;
+    row.classList.toggle('hidden', !(matchSearch && matchArea));
+  });
 }
 
-function roleLabel(role) {
-  if (role === 'admin') return 'Church Admin';
-  if (role === 'ordained') return 'Ordained Pastor';
-  return 'G12 Pastor';
+function applyMemberFilters() {
+  const table = q('#membersTable tbody');
+  if (!table) return;
+  const from = q('#memberDateFrom')?.value || '';
+  const to = q('#memberDateTo')?.value || '';
+  const search = q('#memberSearch')?.value.trim().toLowerCase() || '';
+  const levelFilter = q('#memberLevelFilter')?.value || '';
+  const user = state.session;
+  let members = getMembersForUser(user).slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+
+  members = members.filter(member => {
+    const dateOnly = member.createdAt.slice(0, 10);
+    const level = getMemberLevel(member.id);
+    const tabMatch = state.memberTab === 'members'
+      || (state.memberTab === 'new' && level === LEVELS.new)
+      || (state.memberTab === 'consistent' && level === LEVELS.consistent)
+      || (state.memberTab === 'strong' && level === LEVELS.strong);
+    const fromMatch = !from || dateOnly >= from;
+    const toMatch = !to || dateOnly <= to;
+    const searchMatch = !search || member.fullName.toLowerCase().includes(search) || member.phone.toLowerCase().includes(search);
+    const levelMatch = !levelFilter || level === levelFilter;
+    return tabMatch && fromMatch && toMatch && searchMatch && levelMatch;
+  });
+
+  table.innerHTML = members.length ? members.map(member => {
+    const profile = getMemberProfile(member);
+    return `
+      <tr>
+        <td><button class="link-btn" data-open-member="${member.id}">${escapeHtml(member.fullName)}</button></td>
+        <td>${escapeHtml(profile.areaName)}</td>
+        <td>${escapeHtml(profile.g12Class)}</td>
+        <td><span class="badge ${profile.level === LEVELS.strong ? 'success' : profile.level === LEVELS.consistent ? 'warn' : ''}">${escapeHtml(profile.level)}</span></td>
+        <td>${profile.attendanceCount}</td>
+        <td>${fmtDate(member.createdAt)}</td>
+        <td>${escapeHtml(member.phone)}</td>
+      </tr>
+    `;
+  }).join('') : `<tr><td colspan="7">No members match the current filters.</td></tr>`;
+
+  qq('[data-open-member]', table).forEach(btn => btn.addEventListener('click', () => {
+    state.modalMemberId = btn.dataset.openMember;
+    render();
+  }));
 }
 
-function userById(id) {
-  return appState.db.users.find(user => user.id === id);
+function syncMessageAudienceVisibility() {
+  const type = q('#messageAudienceType')?.value;
+  if (!type) return;
+  const groups = {
+    area: '[data-message-area]',
+    g12: '[data-message-g12]',
+    single_member: '[data-message-single-member]',
+    single_prospect: '[data-message-single-prospect]',
+    selected_members: '[data-message-selected-members]',
+    selected_prospects: '[data-message-selected-prospects]',
+  };
+  Object.values(groups).forEach(sel => q(sel)?.classList.add('hidden'));
+  if (groups[type]) q(groups[type])?.classList.remove('hidden');
 }
 
-function memberById(id) {
-  return appState.db.members.find(member => member.id === id);
+function collectMessageFormData() {
+  const form = q('#messageForm');
+  const fd = new FormData(form);
+  const audienceType = String(fd.get('audienceType'));
+  let audienceId = '';
+  if (audienceType === 'area') audienceId = String(fd.get('audienceId'));
+  if (audienceType === 'g12') audienceId = String(fd.get('g12Id'));
+  if (audienceType === 'single_member') audienceId = String(fd.get('memberId'));
+  if (audienceType === 'single_prospect') audienceId = String(fd.get('prospectId'));
+  const selectedIds = audienceType === 'selected_members'
+    ? qq('input[name="selectedMemberIds"]:checked').map(i => i.value)
+    : audienceType === 'selected_prospects'
+      ? qq('input[name="selectedProspectIds"]:checked').map(i => i.value)
+      : [];
+  return {
+    audienceType,
+    audienceId,
+    selectedIds,
+    message: String(fd.get('message')).trim(),
+    scheduleDate: String(fd.get('scheduleDate') || ''),
+    yearly: String(fd.get('yearly')) === 'true',
+  };
 }
 
-function groupByPastor(pastorId) {
-  return appState.db.g12Groups.find(group => group.pastorId === pastorId);
+function handleSendMessageNow(event) {
+  event.preventDefault();
+  const payload = collectMessageFormData();
+  const targets = getMessageTargets(payload);
+  if (!targets.length) {
+    alert('No people matched the selected audience.');
+    return;
+  }
+  openWhatsappForTargets(targets, payload.message);
 }
 
-function membersInGroup(groupId) {
-  return appState.db.members.filter(member => member.groupId === groupId);
+function handleSaveMessageRule() {
+  const payload = collectMessageFormData();
+  if (!payload.message) {
+    alert('Enter a message first.');
+    return;
+  }
+  state.db.messageRules.push({
+    id: uid('rule'),
+    title: `Scheduled ${new Date().toLocaleTimeString()}`,
+    type: 'scheduled',
+    audienceType: payload.audienceType,
+    audienceId: payload.audienceId,
+    selectedIds: payload.selectedIds,
+    message: payload.message,
+    scheduleDate: payload.scheduleDate,
+    yearly: payload.yearly,
+    createdAt: nowStr(),
+  });
+  saveDb();
+  alert('Message rule saved.');
+  state.view = 'automation';
+  render();
 }
 
-function groupName(groupId) {
-  if (!groupId) return '<span class="badge badge-dark">Unassigned</span>';
-  const group = appState.db.g12Groups.find(item => item.id === groupId);
-  return group ? `<span class="badge badge-primary">${escapeHtml(group.className)}</span>` : '<span class="badge badge-dark">Unknown</span>';
+function runDailyAutomationCheck(showAlert = false) {
+  const due = getDueAutomations();
+  if (!due.length) {
+    if (showAlert) alert('No automation is due right now.');
+    return;
+  }
+  if (showAlert) {
+    const proceed = confirm(`You have ${due.length} due automation(s). Open WhatsApp messages now?`);
+    if (!proceed) return;
+  }
+  due.forEach(rule => runRuleNow(rule.id));
 }
 
-function countMemberAttendance(memberId) {
-  return appState.db.attendance.filter(item => item.memberId === memberId).length;
+function runRuleNow(ruleId) {
+  const rule = state.db.messageRules.find(r => r.id === ruleId);
+  if (!rule) return;
+  const targets = getAudience(rule);
+  if (!targets.length) {
+    alert('This rule currently has no matching audience.');
+    return;
+  }
+  openWhatsappForTargets(targets, rule.message);
+  markAutomationSent(rule.id);
+  render();
 }
 
-function countServiceAttendance(serviceId) {
-  return appState.db.attendance.filter(item => item.serviceId === serviceId).length;
+function addHolidayRule(holidayName) {
+  const year = new Date().getFullYear();
+  const scheduleDate = holidayName === 'Christmas' ? `${year}-12-25` : computeEasterDate(year);
+  const message = holidayName === 'Christmas'
+    ? 'Merry Christmas from Refiners City International Church. The joy of Christ be with you.'
+    : 'Happy Easter from Refiners City International Church. Christ is risen indeed.';
+  state.db.messageRules.push({
+    id: uid('rule'),
+    title: `${holidayName} Greeting`,
+    type: 'holiday',
+    audienceType: 'everyone',
+    audienceId: '',
+    message,
+    scheduleDate,
+    yearly: true,
+    createdAt: nowStr(),
+  });
+  saveDb();
+  alert(`${holidayName} rule added.`);
+  render();
 }
 
-function groupAttendanceTotal(groupId) {
-  if (!groupId) return 0;
-  const memberIds = new Set(membersInGroup(groupId).map(member => member.id));
-  return appState.db.attendance.filter(item => memberIds.has(item.memberId)).length;
-}
-
-function groupServiceAttendance(groupId, serviceId) {
-  if (!groupId) return 0;
-  const memberIds = new Set(membersInGroup(groupId).map(member => member.id));
-  return appState.db.attendance.filter(item => item.serviceId === serviceId && memberIds.has(item.memberId)).length;
-}
-
-function isAttendanceMarked(serviceId, memberId) {
-  return appState.db.attendance.some(item => item.serviceId === serviceId && item.memberId === memberId);
-}
-
-function escapeHtml(value) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-window.addEventListener('DOMContentLoaded', init);
+render();
