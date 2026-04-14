@@ -54,6 +54,7 @@ const state = {
   areaPageCount: 10,
   editingAreaId: null,
   removingAreaId: null,
+  editingG12Id: null,
 };
 
 function loadDb() {
@@ -212,6 +213,19 @@ function getMembersForUser(user) {
   if (!user) return [];
   if (user.role === 'bishop') return state.db.members.filter(m => m.areaId === user.areaId);
   return state.db.members;
+}
+
+function canManageG12Class(user, pastorId) {
+  if (!user) return false;
+  if (user.role === 'admin') return true;
+  return user.role === 'g12' && user.id === pastorId;
+}
+
+function getSelectedG12Pastor(user = state.session) {
+  const pastors = state.db.users.filter(u => u.role === 'g12').slice().sort((a, b) => (a.className || a.name).localeCompare(b.className || b.name));
+  if (!pastors.length) return null;
+  if (user?.role === 'g12') return pastors.find(p => p.id === user.id) || pastors[0];
+  return pastors.find(p => p.id === state.g12FocusId) || pastors[0];
 }
 
 function getAttendanceCount(memberId) {
@@ -819,8 +833,6 @@ function renderMembers() {
       </div>
     </section>
 
-    ${user.role === 'g12' ? renderG12Assignment(user) : ''}
-
     <section class="card">
       <div class="tabs">
         ${['members','new','consistent','strong'].map(tab => `<button class="${state.memberTab===tab?'active':''}" data-member-tab="${tab}">${tab === 'members' ? 'All Members' : tab === 'new' ? 'New Members' : tab === 'consistent' ? 'Consistent New Timers' : 'Strong Members'}</button>`).join('')}
@@ -840,31 +852,6 @@ function renderMembers() {
           </thead>
           <tbody>${listHtml || `<tr><td colspan="7">No members found.</td></tr>`}</tbody>
         </table>
-      </div>
-    </section>
-  `;
-}
-
-function renderG12Assignment(user) {
-  const allMembers = state.db.members.slice().sort((a, b) => a.fullName.localeCompare(b.fullName));
-  return `
-    <section class="card">
-      <h3>Manage ${escapeHtml(user.className || 'My G12 Class')}</h3>
-      <div class="member-list">
-        ${allMembers.map(member => {
-          const assignedUser = getUser(member.g12PastorId);
-          const locked = assignedUser && assignedUser.id !== user.id;
-          const checked = member.g12PastorId === user.id;
-          return `
-            <label class="member-item">
-              <div>
-                <strong>${escapeHtml(member.fullName)}</strong>
-                <div class="member-meta">${locked ? `Already belongs to ${escapeHtml(assignedUser.className || assignedUser.name)}` : checked ? 'Already in your class' : 'Available for assignment'}</div>
-              </div>
-              <input type="checkbox" data-g12-member="${member.id}" ${checked ? 'checked' : ''} ${locked ? 'disabled' : ''} />
-            </label>
-          `;
-        }).join('')}
       </div>
     </section>
   `;
@@ -927,56 +914,80 @@ function renderAreas() {
 function renderG12Groups() {
   const user = state.session;
   const pastors = state.db.users.filter(u => u.role === 'g12').slice().sort((a, b) => (a.className || a.name).localeCompare(b.className || b.name));
-  const visiblePastors = user.role === 'g12' ? pastors.filter(p => p.id === user.id) : pastors;
-  const summaryRows = visiblePastors.map(pastor => ({
-    pastor,
-    members: state.db.members.filter(m => m.g12PastorId === pastor.id),
-  }));
+  const selectedPastor = getSelectedG12Pastor(user);
+  const selectedMembers = selectedPastor ? state.db.members.filter(m => m.g12PastorId === selectedPastor.id).slice().sort((a, b) => a.fullName.localeCompare(b.fullName)) : [];
+  const canManageSelected = selectedPastor ? canManageG12Class(user, selectedPastor.id) : false;
 
   return `
     <section class="two-col top-align">
       <div class="card">
-        <h3>${user.role === 'g12' ? 'My G12 Group' : 'G12 Overview'}</h3>
-        <div class="notice">${user.role === 'g12' ? 'This page lets you track your assigned members in one place. Member assignment still happens under Members.' : 'Click any G12 class to zoom into the members assigned to that pastor.'}</div>
+        <h3>${user.role === 'g12' ? 'My G12 Group' : 'G12 Classes'}</h3>
         <div class="stat-list">
-          ${summaryRows.length ? summaryRows.map(({ pastor, members }) => `<div class="stat-row"><span><button class="link-btn" type="button" data-open-g12-members="${pastor.id}">${escapeHtml(pastor.className || pastor.name)}</button></span><strong>${members.length} members</strong></div>`).join('') : `<div class="empty">No G12 classes yet.</div>`}
+          ${pastors.length ? pastors.map(pastor => {
+            const count = state.db.members.filter(m => m.g12PastorId === pastor.id).length;
+            return `<div class="stat-row"><span><button class="link-btn" type="button" data-open-g12-members="${pastor.id}">${escapeHtml(pastor.className || pastor.name)}</button></span><strong>${count} members</strong></div>`;
+          }).join('') : `<div class="empty">No G12 classes yet.</div>`}
         </div>
       </div>
-      <div class="card area-performance-card">
-        <h3>${user.role === 'g12' ? 'My Members' : 'G12 Performance'}</h3>
-        <div class="member-list">
-          ${summaryRows.length ? summaryRows.map(({ pastor, members }) => `
-            <div class="member-item">
-              <div>
-                <strong><button class="link-btn" type="button" data-open-g12-members="${pastor.id}">${escapeHtml(pastor.className || pastor.name)}</button></strong>
-                <div class="member-meta">Pastor: ${escapeHtml(pastor.name)}</div>
+      <div class="card">
+        <h3>${selectedPastor ? escapeHtml(selectedPastor.className || selectedPastor.name) : 'Selected G12 Class'}</h3>
+        ${selectedPastor ? `
+          <div class="member-meta" style="margin-bottom:14px;">Pastor: ${escapeHtml(selectedPastor.name)} • Created ${fmtDate(selectedPastor.createdAt)}</div>
+          ${canManageSelected ? `
+            <form id="g12ClassSettingsForm" class="form-grid">
+              <input type="hidden" name="pastorId" value="${selectedPastor.id}" />
+              <div class="field">
+                <label>Class Name</label>
+                <input name="className" value="${escapeHtml(selectedPastor.className || '')}" required />
               </div>
-              <span class="badge neutral">${members.length} members</span>
-            </div>
-          `).join('') : `<div class="empty">No G12 data available.</div>`}
-        </div>
+              <div class="field">
+                <label>Add Member From General List</label>
+                <select name="memberId">
+                  <option value="">Choose member</option>
+                  ${state.db.members.slice().sort((a, b) => a.fullName.localeCompare(b.fullName)).map(member => {
+                    const assigned = getUser(member.g12PastorId);
+                    const suffix = assigned ? ` — already in ${assigned.className || assigned.name}` : '';
+                    return `<option value="${member.id}">${escapeHtml(member.fullName)}${escapeHtml(suffix)}</option>`;
+                  }).join('')}
+                </select>
+              </div>
+              <div class="inline-actions" style="grid-column:1/-1;">
+                <button class="btn" type="submit">Save Class Changes</button>
+              </div>
+            </form>
+          ` : `
+            <div class="notice">This class is read-only for your role. Only Church Admin or the pastor who owns this G12 class can edit it.</div>
+          `}
+        ` : `<div class="empty">No G12 class selected.</div>`}
       </div>
     </section>
 
     <section class="card">
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr><th>G12 Class</th><th>Pastor</th><th>Members</th><th>Strong Members</th><th>Created</th></tr>
-          </thead>
-          <tbody>
-            ${summaryRows.length ? summaryRows.map(({ pastor, members }) => `
-              <tr>
-                <td><button class="link-btn" type="button" data-open-g12-members="${pastor.id}">${escapeHtml(pastor.className || pastor.name)}</button></td>
-                <td>${escapeHtml(pastor.name)}</td>
-                <td>${members.length}</td>
-                <td>${members.filter(member => getMemberLevel(member.id) === LEVELS.strong).length}</td>
-                <td>${fmtDate(pastor.createdAt)}</td>
-              </tr>
-            `).join('') : `<tr><td colspan="5">No G12 classes found.</td></tr>`}
-          </tbody>
-        </table>
-      </div>
+      <h3>${selectedPastor ? `Members in ${escapeHtml(selectedPastor.className || selectedPastor.name)}` : 'G12 Members'}</h3>
+      ${selectedPastor ? `
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Name</th><th>Area</th><th>Level</th><th>Attendance</th><th>Phone</th>${canManageSelected ? '<th>Action</th>' : ''}</tr>
+            </thead>
+            <tbody>
+              ${selectedMembers.length ? selectedMembers.map(member => {
+                const profile = getMemberProfile(member);
+                return `
+                  <tr>
+                    <td><button class="link-btn" type="button" data-open-member="${member.id}">${escapeHtml(member.fullName)}</button></td>
+                    <td>${escapeHtml(profile.areaName)}</td>
+                    <td><span class="badge ${profile.level === LEVELS.strong ? 'success' : profile.level === LEVELS.consistent ? 'warn' : ''}">${escapeHtml(profile.level)}</span></td>
+                    <td>${profile.attendanceCount}</td>
+                    <td>${escapeHtml(member.phone)}</td>
+                    ${canManageSelected ? `<td><button class="btn tiny secondary" type="button" data-remove-member-from-g12="${member.id}" data-pastor-id="${selectedPastor.id}">Remove</button></td>` : ''}
+                  </tr>
+                `;
+              }).join('') : `<tr><td colspan="${canManageSelected ? '6' : '5'}">No members assigned to this G12 class yet.</td></tr>`}
+            </tbody>
+          </table>
+        </div>
+      ` : `<div class="empty">Select a G12 class to view its members.</div>`}
     </section>
   `;
 }
@@ -1280,6 +1291,12 @@ function renderMemberModal() {
   const member = getMember(state.modalMemberId);
   if (!member) return '';
   const profile = getMemberProfile(member);
+  const user = state.session;
+  const g12Pastors = state.db.users.filter(u => u.role === 'g12').slice().sort((a, b) => (a.className || a.name).localeCompare(b.className || b.name));
+  const assignedPastor = getUser(member.g12PastorId);
+  const canAdminManage = user.role === 'admin';
+  const canSelfManage = user.role === 'g12' && (!member.g12PastorId || member.g12PastorId === user.id);
+
   return `
     <div class="modal-header">
       <div>
@@ -1302,6 +1319,36 @@ function renderMemberModal() {
           <div class="stat-row"><span>Attendance Count</span><strong>${profile.attendanceCount}</strong></div>
           <div class="stat-row"><span>Date Added</span><strong>${fmtDateTime(profile.createdAt)}</strong></div>
         </div>
+      </section>
+      <section class="card" style="margin-top:16px;">
+        <h3 style="margin-bottom:12px;">G12 Assignment</h3>
+        ${canAdminManage ? `
+          <form id="memberG12Form" class="form-grid single">
+            <input type="hidden" name="memberId" value="${member.id}" />
+            <div class="field">
+              <label>Choose G12 Class</label>
+              <select name="g12PastorId">
+                <option value="">No G12 class</option>
+                ${g12Pastors.map(pastor => `<option value="${pastor.id}" ${member.g12PastorId === pastor.id ? 'selected' : ''}>${escapeHtml(pastor.className || pastor.name)}</option>`).join('')}
+              </select>
+            </div>
+            <div class="inline-actions"><button class="btn" type="submit">Save G12 Assignment</button></div>
+          </form>
+        ` : canSelfManage ? `
+          <form id="memberG12Form" class="form-grid single">
+            <input type="hidden" name="memberId" value="${member.id}" />
+            <div class="field">
+              <label>My G12 Class</label>
+              <select name="g12PastorId">
+                <option value="">No G12 class</option>
+                <option value="${user.id}" ${member.g12PastorId === user.id ? 'selected' : ''}>${escapeHtml(user.className || user.name)}</option>
+              </select>
+            </div>
+            <div class="inline-actions"><button class="btn" type="submit">Save G12 Assignment</button></div>
+          </form>
+        ` : `
+          <div class="notice">${assignedPastor ? `This member already belongs to <strong>${escapeHtml(assignedPastor.className || assignedPastor.name)}</strong>.` : 'Only Church Admin or the owner of a G12 class can edit the G12 assignment here.'}</div>
+        `}
       </section>
     </div>
   `;
@@ -1469,7 +1516,15 @@ function bindAppEvents() {
     render();
   }));
 
-  qq('[data-g12-member]').forEach(box => box.addEventListener('change', handleG12Assignment));
+  q('#memberG12Form')?.addEventListener('submit', handleMemberModalG12Save);
+  q('#g12ClassSettingsForm')?.addEventListener('submit', handleG12ClassSettingsSave);
+  qq('[data-open-g12-members]').forEach(btn => btn.addEventListener('click', () => {
+    state.g12FocusId = btn.dataset.openG12Members;
+    state.areaFocusId = '';
+    if (state.view !== 'g12') state.view = 'g12';
+    render();
+  }));
+  qq('[data-remove-member-from-g12]').forEach(btn => btn.addEventListener('click', () => handleRemoveMemberFromG12(btn.dataset.removeMemberFromG12, btn.dataset.pastorId)));
   qq('[data-member-tab]').forEach(btn => btn.addEventListener('click', () => {
     state.memberTab = btn.dataset.memberTab;
     state.growthFocus = btn.dataset.memberTab;
@@ -1647,11 +1702,71 @@ function handleAddProspect(event) {
   render();
 }
 
-function handleG12Assignment(event) {
-  const member = getMember(event.target.dataset.g12Member);
+function handleMemberModalG12Save(event) {
+  event.preventDefault();
+  const fd = new FormData(event.target);
+  const member = getMember(String(fd.get('memberId')));
   if (!member) return;
-  member.g12PastorId = event.target.checked ? state.session.id : '';
+  const targetPastorId = String(fd.get('g12PastorId') || '');
+  const user = state.session;
+  if (user.role === 'g12' && targetPastorId && targetPastorId !== user.id) {
+    showNotice('You can only assign members to your own G12 class.', 'error');
+    render();
+    return;
+  }
+  if (user.role === 'g12' && member.g12PastorId && member.g12PastorId !== user.id) {
+    const currentPastor = getUser(member.g12PastorId);
+    showNotice(`This member already belongs to ${currentPastor?.className || currentPastor?.name || 'another G12 class'}.`, 'error');
+    render();
+    return;
+  }
+  member.g12PastorId = targetPastorId;
   saveDb();
+  showNotice('G12 assignment updated successfully.');
+  render();
+}
+
+function handleG12ClassSettingsSave(event) {
+  event.preventDefault();
+  const fd = new FormData(event.target);
+  const pastor = getUser(String(fd.get('pastorId')));
+  const className = String(fd.get('className') || '').trim();
+  const memberId = String(fd.get('memberId') || '');
+  const user = state.session;
+  if (!pastor || !canManageG12Class(user, pastor.id)) return;
+  if (!className) {
+    showNotice('Enter a G12 class name.', 'error');
+    render();
+    return;
+  }
+  pastor.className = className;
+
+  if (memberId) {
+    const member = getMember(memberId);
+    if (member) {
+      if (member.g12PastorId && member.g12PastorId !== pastor.id) {
+        const currentPastor = getUser(member.g12PastorId);
+        showNotice(`Already added to ${currentPastor?.className || currentPastor?.name || 'another G12 group'}.`, 'error');
+        render();
+        return;
+      }
+      member.g12PastorId = pastor.id;
+    }
+  }
+
+  saveDb();
+  showNotice(memberId ? 'G12 class updated and member added successfully.' : 'G12 class updated successfully.');
+  render();
+}
+
+function handleRemoveMemberFromG12(memberId, pastorId) {
+  const user = state.session;
+  if (!canManageG12Class(user, pastorId)) return;
+  const member = getMember(memberId);
+  if (!member || member.g12PastorId !== pastorId) return;
+  member.g12PastorId = '';
+  saveDb();
+  showNotice('Member removed from G12 class.');
   render();
 }
 
