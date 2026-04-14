@@ -48,6 +48,7 @@ const state = {
   messageAudienceType: 'everyone',
   mobileNavOpen: false,
   areaFocusId: '',
+  g12FocusId: '',
   growthFocus: 'members',
   notice: null,
   areaPageCount: 10,
@@ -172,7 +173,7 @@ function saveDb() {
 }
 
 function showNotice(message, type = 'success') {
-  state.notice = { message, type };
+  state.notice = { id: nowStr() + Math.random().toString(36).slice(2, 6), message, type };
 }
 
 function clearNotice() {
@@ -582,6 +583,7 @@ function renderApp() {
           ${navButton('dashboard', 'Dashboard')}
           ${navButton('members', 'Members')}
           ${navButton('areas', 'Areas')}
+          ${navButton('g12', 'G12 Groups')}
           ${navButton('attendance', 'Attendance')}
           ${navButton('messages', 'WhatsApp Centre')}
           ${navButton('prospects', 'Non Members')}
@@ -608,7 +610,7 @@ function renderApp() {
             <button class="btn secondary tiny topbar-logout" data-action="logout">Logout</button>
           </div>
         </div>
-        ${state.notice ? `<div class="app-notice ${state.notice.type === 'success' ? 'success-box' : ''}"><span>${escapeHtml(state.notice.message)}</span><button class="btn tiny secondary" type="button" data-clear-notice>Close</button></div>` : ''}
+        ${state.notice ? `<div class="app-notice ${state.notice.type === 'success' ? 'success-box' : ''}"><span>${escapeHtml(state.notice.message)}</span></div>` : ''}
         ${pageContent}
       </main>
     </div>
@@ -634,6 +636,7 @@ function getViewTitle() {
     dashboard: 'Dashboard',
     members: 'Members Database',
     areas: 'Areas & Administration',
+    g12: 'G12 Groups',
     attendance: 'Attendance Control',
     messages: 'WhatsApp Centre',
     prospects: 'Non Members',
@@ -646,6 +649,7 @@ function getViewTitle() {
 function getViewSubtitle(user) {
   if (state.view === 'attendance' && user.role !== 'admin') return 'Church Admin alone can mark attendance. Other roles can only review results.';
   if (state.view === 'areas') return 'Create church areas, assign bishops, and connect members to their administrative base.';
+  if (state.view === 'g12') return "Review G12 groups, track members under each class, and zoom into a pastor's group.";
   if (state.view === 'messages') return 'Prepare manual, scheduled, holiday, and birthday WhatsApp messages for one person or many groups.';
   return 'Manage membership growth, follow-up, services, and communication from one responsive app.';
 }
@@ -655,6 +659,7 @@ function renderView() {
     case 'dashboard': return renderDashboard();
     case 'members': return renderMembers();
     case 'areas': return renderAreas();
+    case 'g12': return renderG12Groups();
     case 'attendance': return renderAttendance();
     case 'messages': return renderMessages();
     case 'prospects': return renderProspects();
@@ -755,6 +760,7 @@ function renderMembers() {
   const g12Pastors = state.db.users.filter(u => u.role === 'g12');
   const canAdd = ['admin', 'bishop'].includes(user.role);
   const focusedArea = getArea(state.areaFocusId);
+  const focusedG12 = getUser(state.g12FocusId);
   const focusedGrowth = state.growthFocus;
 
   const listHtml = visibleMembers.map(member => {
@@ -808,7 +814,7 @@ function renderMembers() {
             </select>
           </div>
         </div>
-        ${focusedArea || (focusedGrowth && focusedGrowth !== 'members') ? `<div class="notice area-focus-banner">${focusedArea ? `Showing members in <strong>${escapeHtml(focusedArea.name)}</strong>.` : ''} ${focusedGrowth && focusedGrowth !== 'members' ? `Showing <strong>${escapeHtml(focusedGrowth === 'new' ? 'New Members' : focusedGrowth === 'consistent' ? 'Consistent New Timers' : 'Strong Members')}</strong>.` : ''} <button class="link-btn" type="button" data-clear-member-focus>Clear filter</button></div>` : ''}
+        ${focusedArea || focusedG12 || (focusedGrowth && focusedGrowth !== 'members') ? `<div class="notice area-focus-banner">${focusedArea ? `Showing members in <strong>${escapeHtml(focusedArea.name)}</strong>.` : ''} ${focusedG12 ? `Showing members in <strong>${escapeHtml(focusedG12.className || focusedG12.name)}</strong>.` : ''} ${focusedGrowth && focusedGrowth !== 'members' ? `Showing <strong>${escapeHtml(focusedGrowth === 'new' ? 'New Members' : focusedGrowth === 'consistent' ? 'Consistent New Timers' : 'Strong Members')}</strong>.` : ''} <button class="link-btn" type="button" data-clear-member-focus>Clear filter</button></div>` : ''}
         <div class="footer-note">Use date range to follow up on members added within a particular period.</div>
       </div>
     </section>
@@ -914,6 +920,63 @@ function renderAreas() {
         </table>
       </div>
       ${areas.length > 10 ? `<div class="inline-actions area-list-controls">${canShowMoreAreas ? `<button class="btn tiny secondary" type="button" data-show-more-areas>Show More</button>` : ''}${canShowLessAreas ? `<button class="btn tiny secondary" type="button" data-show-less-areas>Show Less</button>` : ''}</div>` : ''}
+    </section>
+  `;
+}
+
+function renderG12Groups() {
+  const user = state.session;
+  const pastors = state.db.users.filter(u => u.role === 'g12').slice().sort((a, b) => (a.className || a.name).localeCompare(b.className || b.name));
+  const visiblePastors = user.role === 'g12' ? pastors.filter(p => p.id === user.id) : pastors;
+  const summaryRows = visiblePastors.map(pastor => ({
+    pastor,
+    members: state.db.members.filter(m => m.g12PastorId === pastor.id),
+  }));
+
+  return `
+    <section class="two-col top-align">
+      <div class="card">
+        <h3>${user.role === 'g12' ? 'My G12 Group' : 'G12 Overview'}</h3>
+        <div class="notice">${user.role === 'g12' ? 'This page lets you track your assigned members in one place. Member assignment still happens under Members.' : 'Click any G12 class to zoom into the members assigned to that pastor.'}</div>
+        <div class="stat-list">
+          ${summaryRows.length ? summaryRows.map(({ pastor, members }) => `<div class="stat-row"><span><button class="link-btn" type="button" data-open-g12-members="${pastor.id}">${escapeHtml(pastor.className || pastor.name)}</button></span><strong>${members.length} members</strong></div>`).join('') : `<div class="empty">No G12 classes yet.</div>`}
+        </div>
+      </div>
+      <div class="card area-performance-card">
+        <h3>${user.role === 'g12' ? 'My Members' : 'G12 Performance'}</h3>
+        <div class="member-list">
+          ${summaryRows.length ? summaryRows.map(({ pastor, members }) => `
+            <div class="member-item">
+              <div>
+                <strong><button class="link-btn" type="button" data-open-g12-members="${pastor.id}">${escapeHtml(pastor.className || pastor.name)}</button></strong>
+                <div class="member-meta">Pastor: ${escapeHtml(pastor.name)}</div>
+              </div>
+              <span class="badge neutral">${members.length} members</span>
+            </div>
+          `).join('') : `<div class="empty">No G12 data available.</div>`}
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>G12 Class</th><th>Pastor</th><th>Members</th><th>Strong Members</th><th>Created</th></tr>
+          </thead>
+          <tbody>
+            ${summaryRows.length ? summaryRows.map(({ pastor, members }) => `
+              <tr>
+                <td><button class="link-btn" type="button" data-open-g12-members="${pastor.id}">${escapeHtml(pastor.className || pastor.name)}</button></td>
+                <td>${escapeHtml(pastor.name)}</td>
+                <td>${members.length}</td>
+                <td>${members.filter(member => getMemberLevel(member.id) === LEVELS.strong).length}</td>
+                <td>${fmtDate(pastor.createdAt)}</td>
+              </tr>
+            `).join('') : `<tr><td colspan="5">No G12 classes found.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
     </section>
   `;
 }
@@ -1290,7 +1353,21 @@ function renderAreaEditorModal() {
   `;
 }
 
+function syncFlashNotice() {
+  if (!state.notice || state.notice.type !== 'success') return;
+  const noticeId = state.notice.id;
+  window.clearTimeout(state.noticeTimer);
+  state.noticeTimer = window.setTimeout(() => {
+    if (state.notice && state.notice.id === noticeId) {
+      clearNotice();
+      render();
+    }
+  }, 2400);
+}
+
 function bindAppEvents() {
+  syncFlashNotice();
+
   qq('[data-nav]').forEach(btn => btn.addEventListener('click', () => {
     state.view = btn.dataset.nav;
     state.mobileNavOpen = false;
@@ -1353,6 +1430,7 @@ function bindAppEvents() {
   qq('[data-remove-area]').forEach(btn => btn.addEventListener('click', () => handleRemoveArea(btn.dataset.removeArea)));
   qq('[data-open-area-members]').forEach(btn => btn.addEventListener('click', () => {
     state.areaFocusId = btn.dataset.openAreaMembers;
+    state.g12FocusId = '';
     state.growthFocus = 'members';
     state.memberTab = 'members';
     state.view = 'members';
@@ -1360,6 +1438,7 @@ function bindAppEvents() {
   }));
   q('[data-clear-member-focus]')?.addEventListener('click', () => {
     state.areaFocusId = '';
+    state.g12FocusId = '';
     state.growthFocus = 'members';
     state.memberTab = 'members';
     render();
@@ -1459,7 +1538,7 @@ function handleAddMember(event) {
   state.db.members.push(member);
   saveDb();
   event.target.reset();
-  alert('Member added successfully.');
+  showNotice('Member added successfully.');
   render();
 }
 
@@ -1526,7 +1605,8 @@ function handleCreateService(event) {
   const customName = String(fd.get('customName') || '').trim();
   const name = template === 'custom' ? customName : template;
   if (!name) {
-    alert('Enter the custom service or activity name.');
+    showNotice('Enter the custom service or activity name.', 'error');
+    render();
     return;
   }
   const category = template === 'custom'
@@ -1545,7 +1625,7 @@ function handleCreateService(event) {
   };
   state.db.serviceEvents.push(eventObj);
   saveDb();
-  alert('Service event created. Select it from the list to mark attendance.');
+  showNotice('Service event created. Select it from the list to mark attendance.');
   render();
 }
 
@@ -1563,7 +1643,7 @@ function handleAddProspect(event) {
   });
   saveDb();
   event.target.reset();
-  alert('Non member saved.');
+  showNotice('Non member saved.');
   render();
 }
 
@@ -1628,8 +1708,9 @@ function applyMemberFilters() {
     const searchMatch = !search || member.fullName.toLowerCase().includes(search) || member.phone.toLowerCase().includes(search);
     const levelMatch = !levelFilter || level === levelFilter;
     const areaMatch = !state.areaFocusId || member.areaId === state.areaFocusId;
+    const g12Match = !state.g12FocusId || member.g12PastorId === state.g12FocusId;
     const growthMatch = state.growthFocus === 'members' || (state.growthFocus === 'new' && level === LEVELS.new) || (state.growthFocus === 'consistent' && level === LEVELS.consistent) || (state.growthFocus === 'strong' && level === LEVELS.strong);
-    return tabMatch && fromMatch && toMatch && searchMatch && levelMatch && areaMatch && growthMatch;
+    return tabMatch && fromMatch && toMatch && searchMatch && levelMatch && areaMatch && g12Match && growthMatch;
   });
 
   table.innerHTML = members.length ? members.map(member => {

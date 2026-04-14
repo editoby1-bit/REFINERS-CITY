@@ -299,3 +299,8 @@ tr:last-child td { border-bottom: none; }
 .area-list-controls { margin-top: 14px; justify-content: flex-end; }
 .topbar-logout { display: inline-flex; }
 @media (max-width: 900px) { .topbar-logout { display:none; } }
+
+.app-notice { position: sticky; top: 10px; z-index: 50; justify-content: center; text-align: center; animation: fadeSlide .2s ease; }
+.sidebar-footer .btn, .topbar-logout { display:inline-flex; align-items:center; justify-content:center; }
+.topbar-logout { min-width: 88px; padding-top: 0; padding-bottom: 0; line-height: 1; }
+@keyframes fadeSlide { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
