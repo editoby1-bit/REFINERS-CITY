@@ -44,11 +44,15 @@ const state = {
   session: null,
   view: 'dashboard',
   modalMemberId: null,
-  areaEditorId: null,
   memberTab: 'members',
   messageAudienceType: 'everyone',
   mobileNavOpen: false,
   areaFocusId: '',
+  growthFocus: 'members',
+  notice: null,
+  areaPageCount: 10,
+  editingAreaId: null,
+  removingAreaId: null,
 };
 
 function loadDb() {
@@ -165,6 +169,14 @@ function loadDb() {
 
 function saveDb() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state.db));
+}
+
+function showNotice(message, type = 'success') {
+  state.notice = { message, type };
+}
+
+function clearNotice() {
+  state.notice = null;
 }
 
 function setSession(userId) {
@@ -390,10 +402,17 @@ function renderAuth() {
           <img src="assets/logo.jpg" alt="Refiners City logo" />
           <h2>Refiners City International Church</h2>
           <p>Attendance, membership growth, area structure, G12 tracking, follow-up lists, birthdays, and WhatsApp outreach in one place.</p>
-          <div class="notice">Demo accounts: Admin / Ordained / G12 / Bishop are already loaded. Login details are also in the README.</div>
+          <div class="notice success-box">
+            <strong>Demo login details</strong><br />
+            Admin: admin@refiners.local / admin123<br />
+            Ordained: ordained@refiners.local / pastor123<br />
+            G12: g12@refiners.local / g12pass<br />
+            Bishop: bishop@refiners.local / bishop123
+          </div>
         </div>
         <div class="auth-form">
           <h1 class="auth-title">Welcome back</h1>
+          ${state.notice ? `<div class="notice ${state.notice.type === 'success' ? 'success-box' : ''}">${escapeHtml(state.notice.message)}</div>` : ''}
           <p class="auth-subtitle">Sign in to continue, or create a pastor / bishop account. Church Admin remains the only role that can mark attendance.</p>
 
           <div class="tabs">
@@ -487,9 +506,11 @@ function handleLogin(event) {
   const password = String(fd.get('password'));
   const user = state.db.users.find(u => u.email.toLowerCase() === email && u.password === password);
   if (!user) {
-    alert('Invalid email or password.');
+    showNotice('Invalid email or password.', 'error');
+    renderAuth();
     return;
   }
+  clearNotice();
   setSession(user.id);
   state.view = 'dashboard';
   render();
@@ -501,7 +522,8 @@ function handleSignup(event) {
   const role = String(fd.get('role'));
   const email = String(fd.get('email')).trim().toLowerCase();
   if (state.db.users.some(u => u.email.toLowerCase() === email)) {
-    alert('That email already exists.');
+    showNotice('That email already exists.', 'error');
+    renderAuth();
     return;
   }
 
@@ -509,11 +531,13 @@ function handleSignup(event) {
   let className = String(fd.get('className') || '').trim();
 
   if (role === 'g12' && !className) {
-    alert('G12 pastors must enter their class name.');
+    showNotice('G12 pastors must enter their class name.', 'error');
+    renderAuth();
     return;
   }
   if (role === 'bishop' && !areaId) {
-    alert('Bishops must choose an area.');
+    showNotice('Bishops must choose an area.', 'error');
+    renderAuth();
     return;
   }
 
@@ -529,6 +553,7 @@ function handleSignup(event) {
   };
   state.db.users.push(newUser);
   saveDb();
+  clearNotice();
   setSession(newUser.id);
   state.view = 'dashboard';
   render();
@@ -580,8 +605,10 @@ function renderApp() {
           <div class="inline-actions">
             <span class="badge neutral">${ROLE_LABELS[user.role]}</span>
             ${getDueAutomations().length ? `<span class="badge warn">${getDueAutomations().length} due automation${getDueAutomations().length > 1 ? 's' : ''}</span>` : ''}
+            <button class="btn secondary tiny topbar-logout" data-action="logout">Logout</button>
           </div>
         </div>
+        ${state.notice ? `<div class="app-notice ${state.notice.type === 'success' ? 'success-box' : ''}"><span>${escapeHtml(state.notice.message)}</span><button class="btn tiny secondary" type="button" data-clear-notice>Close</button></div>` : ''}
         ${pageContent}
       </main>
     </div>
@@ -590,8 +617,8 @@ function renderApp() {
       <div class="modal">${renderMemberModal()}</div>
     </div>
 
-    <div id="areaEditorModal" class="modal-backdrop ${state.areaEditorId ? 'show' : ''}">
-      <div class="modal modal-sm">${renderAreaEditorModal()}</div>
+    <div id="areaEditorModal" class="modal-backdrop ${(state.editingAreaId || state.removingAreaId) ? 'show' : ''}">
+      <div class="modal">${renderAreaEditorModal()}</div>
     </div>
   `;
 
@@ -659,9 +686,9 @@ function renderDashboard() {
       <div class="card">
         <h3>Growth Ladder</h3>
         <div class="stat-list">
-          <div class="stat-row"><span><button class="link-btn" type="button" data-open-growth-level="new">New Members</button></span><strong>${newMembers}</strong></div>
-          <div class="stat-row"><span><button class="link-btn" type="button" data-open-growth-level="consistent">Consistent New Timers</button></span><strong>${consistent}</strong></div>
-          <div class="stat-row"><span><button class="link-btn" type="button" data-open-growth-level="strong">Strong Members</button></span><strong>${strong}</strong></div>
+          <div class="stat-row"><span><button class="link-btn" type="button" data-open-growth="new">New Members</button></span><strong>${newMembers}</strong></div>
+          <div class="stat-row"><span><button class="link-btn" type="button" data-open-growth="consistent">Consistent New Timers</button></span><strong>${consistent}</strong></div>
+          <div class="stat-row"><span><button class="link-btn" type="button" data-open-growth="strong">Strong Members</button></span><strong>${strong}</strong></div>
         </div>
         <p class="footer-note">Promotion logic: every 8 attended service events advances the member to the next level.</p>
       </div>
@@ -728,6 +755,7 @@ function renderMembers() {
   const g12Pastors = state.db.users.filter(u => u.role === 'g12');
   const canAdd = ['admin', 'bishop'].includes(user.role);
   const focusedArea = getArea(state.areaFocusId);
+  const focusedGrowth = state.growthFocus;
 
   const listHtml = visibleMembers.map(member => {
     const profile = getMemberProfile(member);
@@ -780,7 +808,7 @@ function renderMembers() {
             </select>
           </div>
         </div>
-        ${focusedArea ? `<div class="notice area-focus-banner">Showing members in <strong>${escapeHtml(focusedArea.name)}</strong>. <button class="link-btn" type="button" data-clear-area-focus>Clear filter</button></div>` : ''}
+        ${focusedArea || (focusedGrowth && focusedGrowth !== 'members') ? `<div class="notice area-focus-banner">${focusedArea ? `Showing members in <strong>${escapeHtml(focusedArea.name)}</strong>.` : ''} ${focusedGrowth && focusedGrowth !== 'members' ? `Showing <strong>${escapeHtml(focusedGrowth === 'new' ? 'New Members' : focusedGrowth === 'consistent' ? 'Consistent New Timers' : 'Strong Members')}</strong>.` : ''} <button class="link-btn" type="button" data-clear-member-focus>Clear filter</button></div>` : ''}
         <div class="footer-note">Use date range to follow up on members added within a particular period.</div>
       </div>
     </section>
@@ -840,8 +868,11 @@ function renderAreas() {
   const user = state.session;
   const canManage = user.role === 'admin';
   const areas = state.db.areas.slice().sort((a, b) => a.name.localeCompare(b.name));
+  const visibleAreas = areas.slice(0, state.areaPageCount);
+  const canShowMoreAreas = state.areaPageCount < areas.length;
+  const canShowLessAreas = areas.length > 10 && state.areaPageCount > 10;
   return `
-    <section class="two-col">
+    <section class="two-col top-align">
       <div class="card">
         <h3>${canManage ? 'Create Area' : 'Area Overview'}</h3>
         ${canManage ? `
@@ -852,7 +883,7 @@ function renderAreas() {
           </form>
         ` : `<div class="notice">Only Church Admin can create areas. Bishops and pastors can review them here.</div>`}
       </div>
-      <div class="card">
+      <div class="card area-performance-card">
         <h3>Area Performance</h3>
         <div class="stat-list">
           ${areas.map(area => {
@@ -870,7 +901,7 @@ function renderAreas() {
             <tr><th>Area</th><th>Bishop</th><th>Members</th><th>Created</th>${canManage ? '<th>Actions</th>' : ''}</tr>
           </thead>
           <tbody>
-            ${areas.length ? areas.map(area => `
+            ${visibleAreas.length ? visibleAreas.map(area => `
               <tr>
                 <td><button class="link-btn" type="button" data-open-area-members="${area.id}">${escapeHtml(area.name)}</button></td>
                 <td>${escapeHtml(area.bishopName)}</td>
@@ -882,6 +913,7 @@ function renderAreas() {
           </tbody>
         </table>
       </div>
+      ${areas.length > 10 ? `<div class="inline-actions area-list-controls">${canShowMoreAreas ? `<button class="btn tiny secondary" type="button" data-show-more-areas>Show More</button>` : ''}${canShowLessAreas ? `<button class="btn tiny secondary" type="button" data-show-less-areas>Show Less</button>` : ''}</div>` : ''}
     </section>
   `;
 }
@@ -1181,38 +1213,6 @@ function renderAutomation() {
   `;
 }
 
-
-function renderAreaEditorModal() {
-  const area = getArea(state.areaEditorId);
-  if (!area) return '';
-  return `
-    <div class="modal-header">
-      <div>
-        <h3>Edit Area</h3>
-        <p class="page-subtitle">Update the area name and bishop name inside the app.</p>
-      </div>
-      <button class="btn tiny secondary" type="button" data-close-area-editor>Close</button>
-    </div>
-    <div class="modal-body">
-      <form id="areaEditorForm" class="form-grid single">
-        <input type="hidden" name="areaId" value="${area.id}" />
-        <div class="field">
-          <label>Area Name</label>
-          <input name="name" value="${escapeHtml(area.name)}" required />
-        </div>
-        <div class="field">
-          <label>Bishop Name</label>
-          <input name="bishopName" value="${escapeHtml(area.bishopName || '')}" required />
-        </div>
-        <div class="inline-actions">
-          <button class="btn secondary" type="button" data-close-area-editor>Cancel</button>
-          <button class="btn" type="submit">Save Changes</button>
-        </div>
-      </form>
-    </div>
-  `;
-}
-
 function renderMemberModal() {
   const member = getMember(state.modalMemberId);
   if (!member) return '';
@@ -1244,6 +1244,52 @@ function renderMemberModal() {
   `;
 }
 
+function renderAreaEditorModal() {
+  const editingArea = state.editingAreaId ? getArea(state.editingAreaId) : null;
+  const removingArea = state.removingAreaId ? getArea(state.removingAreaId) : null;
+  if (!editingArea && !removingArea) return '';
+
+  if (editingArea) {
+    return `
+      <div class="modal-header">
+        <div>
+          <h3>Edit Area</h3>
+          <p class="page-subtitle">Update area details inside the app.</p>
+        </div>
+        <button class="btn tiny secondary" data-close-area-modal>Close</button>
+      </div>
+      <div class="modal-body">
+        <form id="editAreaForm" class="form-grid single">
+          <input type="hidden" name="areaId" value="${editingArea.id}" />
+          <div class="field"><label>Area Name</label><input name="name" value="${escapeHtml(editingArea.name)}" required /></div>
+          <div class="field"><label>Bishop Name</label><input name="bishopName" value="${escapeHtml(editingArea.bishopName || '')}" required /></div>
+          <div class="inline-actions"><button class="btn" type="submit">Save Changes</button></div>
+        </form>
+      </div>
+    `;
+  }
+
+  const membersCount = state.db.members.filter(m => m.areaId === removingArea.id).length;
+  const prospectsCount = state.db.prospects.filter(p => p.areaId === removingArea.id).length;
+  const bishopsCount = state.db.users.filter(u => u.role === 'bishop' && u.areaId === removingArea.id).length;
+  return `
+    <div class="modal-header">
+      <div>
+        <h3>Remove Area</h3>
+        <p class="page-subtitle">This action will unassign linked records from the area.</p>
+      </div>
+      <button class="btn tiny secondary" data-close-area-modal>Close</button>
+    </div>
+    <div class="modal-body">
+      <div class="notice">Remove <strong>${escapeHtml(removingArea.name)}</strong>? ${membersCount} member(s), ${prospectsCount} prospect(s), and ${bishopsCount} bishop account(s) will be unassigned from this area.</div>
+      <div class="inline-actions" style="margin-top:14px;">
+        <button class="btn danger" type="button" data-confirm-remove-area="${removingArea.id}">Remove Area</button>
+        <button class="btn secondary" type="button" data-close-area-modal>Cancel</button>
+      </div>
+    </div>
+  `;
+}
+
 function bindAppEvents() {
   qq('[data-nav]').forEach(btn => btn.addEventListener('click', () => {
     state.view = btn.dataset.nav;
@@ -1251,10 +1297,11 @@ function bindAppEvents() {
     render();
   }));
 
-  q('[data-action="logout"]').addEventListener('click', () => {
+  qq('[data-action="logout"]').forEach(btn => btn.addEventListener('click', () => {
     clearSession();
+    clearNotice();
     render();
-  });
+  }));
 
   q('[data-action="check-automation"]').addEventListener('click', () => runDailyAutomationCheck(true));
 
@@ -1275,17 +1322,25 @@ function bindAppEvents() {
     render();
   });
 
+  q('[data-clear-notice]')?.addEventListener('click', () => {
+    clearNotice();
+    render();
+  });
+
   q('#areaEditorModal')?.addEventListener('click', (e) => {
     if (e.target.id === 'areaEditorModal') {
-      state.areaEditorId = null;
+      state.editingAreaId = null;
+      state.removingAreaId = null;
       render();
     }
   });
-  qq('[data-close-area-editor]').forEach(btn => btn.addEventListener('click', () => {
-    state.areaEditorId = null;
+  qq('[data-close-area-modal]').forEach(btn => btn.addEventListener('click', () => {
+    state.editingAreaId = null;
+    state.removingAreaId = null;
     render();
   }));
-  q('#areaEditorForm')?.addEventListener('submit', handleAreaEditorSubmit);
+  q('#editAreaForm')?.addEventListener('submit', handleSaveAreaEdit);
+  q('[data-confirm-remove-area]')?.addEventListener('click', (e) => handleRemoveAreaConfirmed(e.target.dataset.confirmRemoveArea));
 
   q('#memberForm')?.addEventListener('submit', handleAddMember);
   q('#areaForm')?.addEventListener('submit', handleAddArea);
@@ -1298,11 +1353,23 @@ function bindAppEvents() {
   qq('[data-remove-area]').forEach(btn => btn.addEventListener('click', () => handleRemoveArea(btn.dataset.removeArea)));
   qq('[data-open-area-members]').forEach(btn => btn.addEventListener('click', () => {
     state.areaFocusId = btn.dataset.openAreaMembers;
+    state.growthFocus = 'members';
+    state.memberTab = 'members';
     state.view = 'members';
     render();
   }));
-  q('[data-clear-area-focus]')?.addEventListener('click', () => {
+  q('[data-clear-member-focus]')?.addEventListener('click', () => {
     state.areaFocusId = '';
+    state.growthFocus = 'members';
+    state.memberTab = 'members';
+    render();
+  });
+  q('[data-show-more-areas]')?.addEventListener('click', () => {
+    state.areaPageCount = Math.min(state.areaPageCount + 10, state.db.areas.length);
+    render();
+  });
+  q('[data-show-less-areas]')?.addEventListener('click', () => {
+    state.areaPageCount = 10;
     render();
   });
 
@@ -1326,8 +1393,15 @@ function bindAppEvents() {
   qq('[data-g12-member]').forEach(box => box.addEventListener('change', handleG12Assignment));
   qq('[data-member-tab]').forEach(btn => btn.addEventListener('click', () => {
     state.memberTab = btn.dataset.memberTab;
+    state.growthFocus = btn.dataset.memberTab;
     applyMemberFilters();
     qq('[data-member-tab]').forEach(b => b.classList.toggle('active', b === btn));
+  }));
+  qq('[data-open-growth]').forEach(btn => btn.addEventListener('click', () => {
+    state.growthFocus = btn.dataset.openGrowth;
+    state.memberTab = btn.dataset.openGrowth;
+    state.view = 'members';
+    render();
   }));
 
   ['#memberDateFrom', '#memberDateTo', '#memberSearch', '#memberLevelFilter'].forEach(sel => {
@@ -1356,12 +1430,6 @@ function bindAppEvents() {
       q('select[name="prospectId"]').value = btn.dataset.messageSingleProspect;
       q('textarea[name="message"]').value = 'Hello {name}, we would love to welcome you again to Refiners City International Church.';
     }, 0);
-  }));
-
-  qq('[data-open-growth-level]').forEach(btn => btn.addEventListener('click', () => {
-    state.memberTab = btn.dataset.openGrowthLevel;
-    state.view = 'members';
-    render();
   }));
 
   qq('[data-run-rule]').forEach(btn => btn.addEventListener('click', () => runRuleNow(btn.dataset.runRule)));
@@ -1406,57 +1474,48 @@ function handleAddArea(event) {
   });
   saveDb();
   event.target.reset();
-  alert('Area created successfully.');
+  showNotice('Area created successfully.');
   render();
 }
 
 function handleEditArea(areaId) {
-  const area = getArea(areaId);
-  if (!area) return;
-  state.areaEditorId = areaId;
+  state.editingAreaId = areaId;
+  state.removingAreaId = null;
   render();
 }
 
-function handleAreaEditorSubmit(event) {
+function handleSaveAreaEdit(event) {
   event.preventDefault();
   const fd = new FormData(event.target);
-  const areaId = String(fd.get('areaId') || '');
-  const area = getArea(areaId);
+  const area = getArea(String(fd.get('areaId')));
   if (!area) return;
-
-  const cleanedName = String(fd.get('name') || '').trim();
-  const cleanedBishop = String(fd.get('bishopName') || '').trim();
-
-  if (!cleanedName) {
-    alert('Area name cannot be empty.');
-    return;
-  }
-  if (!cleanedBishop) {
-    alert('Bishop name cannot be empty.');
-    return;
-  }
-
-  area.name = cleanedName;
-  area.bishopName = cleanedBishop;
-  state.areaEditorId = null;
+  const nextName = String(fd.get('name') || '').trim();
+  const nextBishop = String(fd.get('bishopName') || '').trim();
+  if (!nextName) return;
+  if (!nextBishop) return;
+  area.name = nextName;
+  area.bishopName = nextBishop;
+  state.editingAreaId = null;
   saveDb();
+  showNotice('Area updated successfully.');
   render();
 }
 
 function handleRemoveArea(areaId) {
-  const area = getArea(areaId);
-  if (!area) return;
-  const membersCount = state.db.members.filter(m => m.areaId === areaId).length;
-  const prospectsCount = state.db.prospects.filter(p => p.areaId === areaId).length;
-  const bishopsCount = state.db.users.filter(u => u.role === 'bishop' && u.areaId === areaId).length;
-  const confirmed = confirm(`Remove ${area.name}? ${membersCount} member(s), ${prospectsCount} prospect(s), and ${bishopsCount} bishop account(s) will be unassigned from this area.`);
-  if (!confirmed) return;
+  state.removingAreaId = areaId;
+  state.editingAreaId = null;
+  render();
+}
+
+function handleRemoveAreaConfirmed(areaId) {
   state.db.areas = state.db.areas.filter(a => a.id !== areaId);
   state.db.members.forEach(member => { if (member.areaId === areaId) member.areaId = ''; });
   state.db.prospects.forEach(person => { if (person.areaId === areaId) person.areaId = ''; });
   state.db.users.forEach(user => { if (user.areaId === areaId) user.areaId = ''; });
   if (state.areaFocusId === areaId) state.areaFocusId = '';
+  state.removingAreaId = null;
   saveDb();
+  showNotice('Area removed successfully.');
   render();
 }
 
@@ -1569,7 +1628,8 @@ function applyMemberFilters() {
     const searchMatch = !search || member.fullName.toLowerCase().includes(search) || member.phone.toLowerCase().includes(search);
     const levelMatch = !levelFilter || level === levelFilter;
     const areaMatch = !state.areaFocusId || member.areaId === state.areaFocusId;
-    return tabMatch && fromMatch && toMatch && searchMatch && levelMatch && areaMatch;
+    const growthMatch = state.growthFocus === 'members' || (state.growthFocus === 'new' && level === LEVELS.new) || (state.growthFocus === 'consistent' && level === LEVELS.consistent) || (state.growthFocus === 'strong' && level === LEVELS.strong);
+    return tabMatch && fromMatch && toMatch && searchMatch && levelMatch && areaMatch && growthMatch;
   });
 
   table.innerHTML = members.length ? members.map(member => {
