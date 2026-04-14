@@ -44,6 +44,7 @@ const state = {
   session: null,
   view: 'dashboard',
   modalMemberId: null,
+  areaEditorId: null,
   memberTab: 'members',
   messageAudienceType: 'everyone',
   mobileNavOpen: false,
@@ -588,6 +589,10 @@ function renderApp() {
     <div id="memberModal" class="modal-backdrop ${state.modalMemberId ? 'show' : ''}">
       <div class="modal">${renderMemberModal()}</div>
     </div>
+
+    <div id="areaEditorModal" class="modal-backdrop ${state.areaEditorId ? 'show' : ''}">
+      <div class="modal modal-sm">${renderAreaEditorModal()}</div>
+    </div>
   `;
 
   bindAppEvents();
@@ -654,9 +659,9 @@ function renderDashboard() {
       <div class="card">
         <h3>Growth Ladder</h3>
         <div class="stat-list">
-          <div class="stat-row"><span>New Members</span><strong>${newMembers}</strong></div>
-          <div class="stat-row"><span>Consistent New Timers</span><strong>${consistent}</strong></div>
-          <div class="stat-row"><span>Strong Members</span><strong>${strong}</strong></div>
+          <div class="stat-row"><span><button class="link-btn" type="button" data-open-growth-level="new">New Members</button></span><strong>${newMembers}</strong></div>
+          <div class="stat-row"><span><button class="link-btn" type="button" data-open-growth-level="consistent">Consistent New Timers</button></span><strong>${consistent}</strong></div>
+          <div class="stat-row"><span><button class="link-btn" type="button" data-open-growth-level="strong">Strong Members</button></span><strong>${strong}</strong></div>
         </div>
         <p class="footer-note">Promotion logic: every 8 attended service events advances the member to the next level.</p>
       </div>
@@ -1176,6 +1181,38 @@ function renderAutomation() {
   `;
 }
 
+
+function renderAreaEditorModal() {
+  const area = getArea(state.areaEditorId);
+  if (!area) return '';
+  return `
+    <div class="modal-header">
+      <div>
+        <h3>Edit Area</h3>
+        <p class="page-subtitle">Update the area name and bishop name inside the app.</p>
+      </div>
+      <button class="btn tiny secondary" type="button" data-close-area-editor>Close</button>
+    </div>
+    <div class="modal-body">
+      <form id="areaEditorForm" class="form-grid single">
+        <input type="hidden" name="areaId" value="${area.id}" />
+        <div class="field">
+          <label>Area Name</label>
+          <input name="name" value="${escapeHtml(area.name)}" required />
+        </div>
+        <div class="field">
+          <label>Bishop Name</label>
+          <input name="bishopName" value="${escapeHtml(area.bishopName || '')}" required />
+        </div>
+        <div class="inline-actions">
+          <button class="btn secondary" type="button" data-close-area-editor>Cancel</button>
+          <button class="btn" type="submit">Save Changes</button>
+        </div>
+      </form>
+    </div>
+  `;
+}
+
 function renderMemberModal() {
   const member = getMember(state.modalMemberId);
   if (!member) return '';
@@ -1237,6 +1274,18 @@ function bindAppEvents() {
     state.modalMemberId = null;
     render();
   });
+
+  q('#areaEditorModal')?.addEventListener('click', (e) => {
+    if (e.target.id === 'areaEditorModal') {
+      state.areaEditorId = null;
+      render();
+    }
+  });
+  qq('[data-close-area-editor]').forEach(btn => btn.addEventListener('click', () => {
+    state.areaEditorId = null;
+    render();
+  }));
+  q('#areaEditorForm')?.addEventListener('submit', handleAreaEditorSubmit);
 
   q('#memberForm')?.addEventListener('submit', handleAddMember);
   q('#areaForm')?.addEventListener('submit', handleAddArea);
@@ -1309,6 +1358,12 @@ function bindAppEvents() {
     }, 0);
   }));
 
+  qq('[data-open-growth-level]').forEach(btn => btn.addEventListener('click', () => {
+    state.memberTab = btn.dataset.openGrowthLevel;
+    state.view = 'members';
+    render();
+  }));
+
   qq('[data-run-rule]').forEach(btn => btn.addEventListener('click', () => runRuleNow(btn.dataset.runRule)));
   qq('[data-quick-birthday]').forEach(btn => btn.addEventListener('click', () => {
     const targets = getBirthdaysToday(btn.dataset.quickBirthday);
@@ -1358,22 +1413,32 @@ function handleAddArea(event) {
 function handleEditArea(areaId) {
   const area = getArea(areaId);
   if (!area) return;
-  const nextName = prompt('Edit area name', area.name);
-  if (nextName === null) return;
-  const cleanedName = String(nextName).trim();
+  state.areaEditorId = areaId;
+  render();
+}
+
+function handleAreaEditorSubmit(event) {
+  event.preventDefault();
+  const fd = new FormData(event.target);
+  const areaId = String(fd.get('areaId') || '');
+  const area = getArea(areaId);
+  if (!area) return;
+
+  const cleanedName = String(fd.get('name') || '').trim();
+  const cleanedBishop = String(fd.get('bishopName') || '').trim();
+
   if (!cleanedName) {
     alert('Area name cannot be empty.');
     return;
   }
-  const nextBishop = prompt('Edit bishop name', area.bishopName || '');
-  if (nextBishop === null) return;
-  const cleanedBishop = String(nextBishop).trim();
   if (!cleanedBishop) {
     alert('Bishop name cannot be empty.');
     return;
   }
+
   area.name = cleanedName;
   area.bishopName = cleanedBishop;
+  state.areaEditorId = null;
   saveDb();
   render();
 }

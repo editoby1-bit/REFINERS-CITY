@@ -244,6 +244,7 @@ tr:last-child td { border-bottom: none; }
 .modal-header { padding: 18px 20px; border-bottom: 1px solid #f0dfe7; display: flex; align-items: start; justify-content: space-between; gap: 10px; }
 .modal-header h3 { margin: 0; }
 .modal-body { padding: 18px 20px 20px; }
+.modal-sm { width: min(520px, 100%); }
 .message-preview { white-space: pre-wrap; background: #fff8fb; border: 1px solid var(--line); border-radius: 16px; padding: 14px; min-height: 90px; }
 .notice { padding: 12px 14px; border-radius: 14px; background: #fff6da; color: #805300; border: 1px solid #edd99b; }
 .success-box { background: #e7f8ef; border-color: #b9e4ca; color: #165235; }
