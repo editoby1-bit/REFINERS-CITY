@@ -1604,7 +1604,12 @@ function bindAppEvents() {
   q('#memberG12Form')?.addEventListener('submit', handleMemberModalG12Save);
   q('#g12ClassSettingsForm')?.addEventListener('submit', handleG12ClassSettingsSave);
   qq('[data-open-g12-members]').forEach(btn => btn.addEventListener('click', () => {
-    state.g12FocusId = btn.dataset.openG12Members;
+    const clickedId = btn.dataset.openG12Members;
+    if (state.session?.role === 'admin' && state.g12FocusId === clickedId) {
+      state.g12FocusId = '';
+    } else {
+      state.g12FocusId = clickedId;
+    }
     state.areaFocusId = '';
     if (state.view !== 'g12') state.view = 'g12';
     render();
