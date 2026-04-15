@@ -55,6 +55,7 @@ const state = {
   editingAreaId: null,
   removingAreaId: null,
   editingG12Id: null,
+  dialog: null,
 };
 
 function loadDb() {
@@ -179,6 +180,15 @@ function showNotice(message, type = 'success') {
 
 function clearNotice() {
   state.notice = null;
+}
+
+function openDialog({ title = 'Notice', message = '', tone = 'info', confirmLabel = 'OK', cancelLabel = '', onConfirm = null, onCancel = null } = {}) {
+  state.dialog = { title, message, tone, confirmLabel, cancelLabel, onConfirm, onCancel };
+  render();
+}
+
+function closeDialog() {
+  state.dialog = null;
 }
 
 function setSession(userId) {
@@ -386,7 +396,8 @@ function getMessageTargets({ audienceType, audienceId, selectedIds }) {
 function openWhatsappForTargets(targets, message) {
   const valid = targets.filter(t => phoneDigits(t.phone));
   if (!valid.length) {
-    alert('No valid phone numbers found for this audience.');
+    showNotice('No valid phone numbers found for this audience.', 'error');
+    render();
     return;
   }
   valid.forEach((target, index) => {
@@ -636,9 +647,33 @@ function renderApp() {
     <div id="areaEditorModal" class="modal-backdrop ${(state.editingAreaId || state.removingAreaId) ? 'show' : ''}">
       <div class="modal">${renderAreaEditorModal()}</div>
     </div>
+
+    <div id="appDialogModal" class="modal-backdrop ${state.dialog ? 'show' : ''}">
+      <div class="modal dialog-modal">${renderDialogModal()}</div>
+    </div>
   `;
 
   bindAppEvents();
+}
+
+function renderDialogModal() {
+  if (!state.dialog) return '';
+  const toneClass = state.dialog.tone === 'success' ? 'success-box' : state.dialog.tone === 'danger' ? 'danger-box' : '';
+  return `
+    <div class="modal-header">
+      <div>
+        <h3>${escapeHtml(state.dialog.title)}</h3>
+      </div>
+      <button class="btn tiny secondary" type="button" data-dialog-close>Close</button>
+    </div>
+    <div class="modal-body">
+      <div class="notice ${toneClass}">${state.dialog.message}</div>
+      <div class="inline-actions modal-actions">
+        ${state.dialog.cancelLabel ? `<button class="btn tiny secondary" type="button" data-dialog-cancel>${escapeHtml(state.dialog.cancelLabel)}</button>` : ''}
+        <button class="btn tiny" type="button" data-dialog-confirm>${escapeHtml(state.dialog.confirmLabel || 'OK')}</button>
+      </div>
+    </div>
+  `;
 }
 
 function navButton(view, label) {
@@ -917,12 +952,37 @@ function renderG12Groups() {
   const selectedPastor = getSelectedG12Pastor(user);
   const selectedMembers = selectedPastor ? state.db.members.filter(m => m.g12PastorId === selectedPastor.id).slice().sort((a, b) => a.fullName.localeCompare(b.fullName)) : [];
   const canManageSelected = selectedPastor ? canManageG12Class(user, selectedPastor.id) : false;
+  const availableMembers = state.db.members.slice().sort((a, b) => a.fullName.localeCompare(b.fullName));
 
   return `
     <section class="two-col top-align">
       <div class="card">
-        <h3>${user.role === 'g12' ? 'My G12 Group' : 'G12 Classes'}</h3>
-        <div class="stat-list">
+        <h3>${user.role === 'g12' ? 'My G12 Group' : 'Create / Review G12 Classes'}</h3>
+        ${user.role === 'admin' ? `
+          <form id="createG12ClassForm" class="form-grid">
+            <div class="field">
+              <label>Pastor Name</label>
+              <input name="name" placeholder="Example: Pastor Mary" required />
+            </div>
+            <div class="field">
+              <label>Class Name</label>
+              <input name="className" placeholder="Example: Pastor Mary's Class" required />
+            </div>
+            <div class="field">
+              <label>Email</label>
+              <input type="email" name="email" placeholder="pastor@refiners.local" required />
+            </div>
+            <div class="field">
+              <label>Password</label>
+              <input type="text" name="password" placeholder="Create password" required />
+            </div>
+            <div class="inline-actions" style="grid-column:1/-1;">
+              <button class="btn" type="submit">Add G12 Class</button>
+            </div>
+          </form>
+        ` : `<div class="notice">Open a G12 class below to review the members already assigned to that class.</div>`}
+
+        <div class="stat-list section-gap-top">
           ${pastors.length ? pastors.map(pastor => {
             const count = state.db.members.filter(m => m.g12PastorId === pastor.id).length;
             return `<div class="stat-row"><span><button class="link-btn" type="button" data-open-g12-members="${pastor.id}">${escapeHtml(pastor.className || pastor.name)}</button></span><strong>${count} members</strong></div>`;
@@ -944,7 +1004,7 @@ function renderG12Groups() {
                 <label>Add Member From General List</label>
                 <select name="memberId">
                   <option value="">Choose member</option>
-                  ${state.db.members.slice().sort((a, b) => a.fullName.localeCompare(b.fullName)).map(member => {
+                  ${availableMembers.map(member => {
                     const assigned = getUser(member.g12PastorId);
                     const suffix = assigned ? ` — already in ${assigned.className || assigned.name}` : '';
                     return `<option value="${member.id}">${escapeHtml(member.fullName)}${escapeHtml(suffix)}</option>`;
@@ -958,7 +1018,7 @@ function renderG12Groups() {
           ` : `
             <div class="notice">This class is read-only for your role. Only Church Admin or the pastor who owns this G12 class can edit it.</div>
           `}
-        ` : `<div class="empty">No G12 class selected.</div>`}
+        ` : `<div class="empty">Select a G12 class to view or manage it.</div>`}
       </div>
     </section>
 
@@ -1427,7 +1487,7 @@ function bindAppEvents() {
     render();
   }));
 
-  q('[data-action="check-automation"]').addEventListener('click', () => runDailyAutomationCheck(true));
+  q('[data-action="check-automation"]')?.addEventListener('click', () => runDailyAutomationCheck(true));
 
   const toggleBtn = q('[data-action="toggle-nav"]');
   if (toggleBtn) toggleBtn.addEventListener('click', () => {
@@ -1466,8 +1526,32 @@ function bindAppEvents() {
   q('#editAreaForm')?.addEventListener('submit', handleSaveAreaEdit);
   q('[data-confirm-remove-area]')?.addEventListener('click', (e) => handleRemoveAreaConfirmed(e.target.dataset.confirmRemoveArea));
 
+  q('#appDialogModal')?.addEventListener('click', (e) => {
+    if (e.target.id === 'appDialogModal') {
+      closeDialog();
+      render();
+    }
+  });
+  q('[data-dialog-close]')?.addEventListener('click', () => {
+    closeDialog();
+    render();
+  });
+  q('[data-dialog-cancel]')?.addEventListener('click', () => {
+    const onCancel = state.dialog?.onCancel;
+    closeDialog();
+    if (onCancel) onCancel();
+    render();
+  });
+  q('[data-dialog-confirm]')?.addEventListener('click', () => {
+    const onConfirm = state.dialog?.onConfirm;
+    closeDialog();
+    if (onConfirm) onConfirm();
+    render();
+  });
+
   q('#memberForm')?.addEventListener('submit', handleAddMember);
   q('#areaForm')?.addEventListener('submit', handleAddArea);
+  q('#createG12ClassForm')?.addEventListener('submit', handleCreateG12Class);
   q('#serviceForm')?.addEventListener('submit', handleCreateService);
   q('#prospectForm')?.addEventListener('submit', handleAddProspect);
   q('#messageForm')?.addEventListener('submit', handleSendMessageNow);
@@ -1726,6 +1810,41 @@ function handleMemberModalG12Save(event) {
   render();
 }
 
+function handleCreateG12Class(event) {
+  event.preventDefault();
+  const fd = new FormData(event.target);
+  const name = String(fd.get('name') || '').trim();
+  const className = String(fd.get('className') || '').trim();
+  const email = String(fd.get('email') || '').trim().toLowerCase();
+  const password = String(fd.get('password') || '').trim();
+  if (!name || !className || !email || !password) {
+    showNotice('Complete all G12 class details first.', 'error');
+    render();
+    return;
+  }
+  if (state.db.users.some(user => user.email.toLowerCase() === email)) {
+    showNotice('That email is already in use.', 'error');
+    render();
+    return;
+  }
+  const pastor = {
+    id: uid('user'),
+    name,
+    email,
+    password,
+    role: 'g12',
+    className,
+    areaId: '',
+    createdAt: nowStr(),
+  };
+  state.db.users.push(pastor);
+  state.g12FocusId = pastor.id;
+  saveDb();
+  event.target.reset();
+  showNotice('G12 class created successfully.');
+  render();
+}
+
 function handleG12ClassSettingsSave(event) {
   event.preventDefault();
   const fd = new FormData(event.target);
@@ -1893,7 +2012,8 @@ function handleSendMessageNow(event) {
   const payload = collectMessageFormData();
   const targets = getMessageTargets(payload);
   if (!targets.length) {
-    alert('No people matched the selected audience.');
+    showNotice('No people matched the selected audience.', 'error');
+    render();
     return;
   }
   openWhatsappForTargets(targets, payload.message);
@@ -1902,7 +2022,8 @@ function handleSendMessageNow(event) {
 function handleSaveMessageRule() {
   const payload = collectMessageFormData();
   if (!payload.message) {
-    alert('Enter a message first.');
+    showNotice('Enter a message first.', 'error');
+    render();
     return;
   }
   state.db.messageRules.push({
@@ -1918,7 +2039,7 @@ function handleSaveMessageRule() {
     createdAt: nowStr(),
   });
   saveDb();
-  alert('Message rule saved.');
+  showNotice('Message rule saved.');
   state.view = 'automation';
   render();
 }
@@ -1926,12 +2047,26 @@ function handleSaveMessageRule() {
 function runDailyAutomationCheck(showAlert = false) {
   const due = getDueAutomations();
   if (!due.length) {
-    if (showAlert) alert('No automation is due right now.');
+    if (showAlert) {
+      openDialog({
+        title: 'Run Due Automations',
+        message: 'No automation is due right now.',
+        confirmLabel: 'OK',
+      });
+    }
     return;
   }
   if (showAlert) {
-    const proceed = confirm(`You have ${due.length} due automation(s). Open WhatsApp messages now?`);
-    if (!proceed) return;
+    openDialog({
+      title: 'Run Due Automations',
+      message: `You have <strong>${due.length}</strong> due automation(s). Open WhatsApp messages now?`,
+      confirmLabel: 'Open Messages',
+      cancelLabel: 'Cancel',
+      onConfirm: () => {
+        due.forEach(rule => runRuleNow(rule.id));
+      },
+    });
+    return;
   }
   due.forEach(rule => runRuleNow(rule.id));
 }
@@ -1941,7 +2076,8 @@ function runRuleNow(ruleId) {
   if (!rule) return;
   const targets = getAudience(rule);
   if (!targets.length) {
-    alert('This rule currently has no matching audience.');
+    showNotice('This rule currently has no matching audience.', 'error');
+    render();
     return;
   }
   openWhatsappForTargets(targets, rule.message);
@@ -1967,7 +2103,7 @@ function addHolidayRule(holidayName) {
     createdAt: nowStr(),
   });
   saveDb();
-  alert(`${holidayName} rule added.`);
+  showNotice(`${holidayName} rule added.`);
   render();
 }
 

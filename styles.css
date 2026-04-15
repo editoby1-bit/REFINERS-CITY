@@ -87,13 +87,14 @@ img { max-width: 100%; display: block; }
 .sidebar {
   background: linear-gradient(180deg, #91103c 0%, #bd1a59 100%);
   color: white;
-  padding: 22px 18px;
+  padding: 22px 18px 34px;
   display: flex;
   flex-direction: column;
   gap: 18px;
   position: sticky;
   top: 0;
   height: 100vh;
+  overflow: auto;
 }
 .brand { display: flex; align-items: center; gap: 12px; }
 .brand img { width: 56px; height: 56px; object-fit: cover; border-radius: 14px; background: white; padding: 4px; }
@@ -114,7 +115,7 @@ img { max-width: 100%; display: block; }
   font-weight: 700;
 }
 .nav button.active, .nav button:hover { background: rgba(255,255,255,0.16); border-color: rgba(255,255,255,0.18); }
-.sidebar-footer { margin-top: auto; display: flex; flex-direction: column; gap: 10px; }
+.sidebar-footer { margin-top: auto; display: flex; flex-direction: column; gap: 10px; padding-bottom: 28px; }
 .main {
   padding: 24px;
   display: flex;
@@ -304,3 +305,8 @@ tr:last-child td { border-bottom: none; }
 .sidebar-footer .btn, .topbar-logout { display:inline-flex; align-items:center; justify-content:center; }
 .topbar-logout { min-width: 88px; padding-top: 0; padding-bottom: 0; line-height: 1; }
 @keyframes fadeSlide { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+
+.dialog-modal { max-width: 520px; }
+.modal-actions { justify-content: flex-end; margin-top: 16px; }
+.danger-box { background: #fde9ec; border-color: #efc0c7; color: #8e1b2d; }
+.section-gap-top { margin-top: 16px; }
