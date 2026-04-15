@@ -235,7 +235,8 @@ function getSelectedG12Pastor(user = state.session) {
   const pastors = state.db.users.filter(u => u.role === 'g12').slice().sort((a, b) => (a.className || a.name).localeCompare(b.className || b.name));
   if (!pastors.length) return null;
   if (user?.role === 'g12') return pastors.find(p => p.id === user.id) || pastors[0];
-  return pastors.find(p => p.id === state.g12FocusId) || pastors[0];
+  if (!state.g12FocusId) return null;
+  return pastors.find(p => p.id === state.g12FocusId) || null;
 }
 
 function getAttendanceCount(memberId) {
