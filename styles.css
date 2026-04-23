@@ -310,3 +310,7 @@ tr:last-child td { border-bottom: none; }
 .modal-actions { justify-content: flex-end; margin-top: 16px; }
 .danger-box { background: #fde9ec; border-color: #efc0c7; color: #8e1b2d; }
 .section-gap-top { margin-top: 16px; }
+
+.stack-gap { display: grid; gap: 18px; }
+.compact-toolbar .field { min-width: 140px; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }

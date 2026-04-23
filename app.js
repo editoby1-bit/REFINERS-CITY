@@ -1,4 +1,4 @@
-const STORAGE_KEY = 'refiners_city_attendance_v2';
+const STORAGE_KEY = 'refiners_city_attendance_v3';
 
 const q = (s, el = document) => el.querySelector(s);
 const qq = (s, el = document) => Array.from(el.querySelectorAll(s));
@@ -32,6 +32,16 @@ const STATIC_SERVICE_TYPES = [
   'Midweek Service',
 ];
 
+function defaultServiceTemplates() {
+  return [
+    { id: 'tmpl_sun_1', label: 'Sunday 1st Service', category: 'Sunday', dayOfWeek: 'Sunday', isStatutory: true, sortOrder: 1 },
+    { id: 'tmpl_sun_2', label: 'Sunday 2nd Service', category: 'Sunday', dayOfWeek: 'Sunday', isStatutory: true, sortOrder: 2 },
+    { id: 'tmpl_sun_3', label: 'Sunday 3rd Service', category: 'Sunday', dayOfWeek: 'Sunday', isStatutory: true, sortOrder: 3 },
+    { id: 'tmpl_sun_4', label: 'Sunday 4th Service', category: 'Sunday', dayOfWeek: 'Sunday', isStatutory: true, sortOrder: 4 },
+    { id: 'tmpl_midweek', label: 'Midweek Service', category: 'Midweek', dayOfWeek: 'Wednesday', isStatutory: true, sortOrder: 5 },
+  ];
+}
+
 const ROLE_LABELS = {
   admin: 'Church Admin',
   ordained: 'Ordained Pastor',
@@ -52,10 +62,13 @@ const state = {
   growthFocus: 'members',
   notice: null,
   areaPageCount: 10,
+  memberPageCount: 50,
   editingAreaId: null,
   removingAreaId: null,
   editingG12Id: null,
   dialog: null,
+  selectedAttendanceEventId: '',
+  absenceFilters: { areaId: '', g12Id: '', level: '' },
 };
 
 function loadDb() {
@@ -65,6 +78,7 @@ function loadDb() {
     parsed.automationLog ||= [];
     parsed.messageRules ||= [];
     parsed.prospects ||= [];
+    parsed.serviceTemplates ||= defaultServiceTemplates();
     parsed.serviceEvents ||= [];
     parsed.attendance ||= [];
     parsed.members ||= [];
@@ -134,6 +148,7 @@ function loadDb() {
         createdAt: nowStr(),
       }
     ],
+    serviceTemplates: defaultServiceTemplates(),
     serviceEvents: [
       { id: event1, name: 'Sunday 1st Service', category: 'Sunday', date: todayStr(), custom: false, createdByUserId: adminId, createdAt: nowStr() },
       { id: event2, name: 'Midweek Service', category: 'Midweek', date: todayStr(), custom: false, createdByUserId: adminId, createdAt: nowStr() },
@@ -217,6 +232,54 @@ function getMember(memberId) {
 
 function getUser(userId) {
   return state.db.users.find(u => u.id === userId) || null;
+}
+
+function getServiceTemplates() {
+  return (state.db.serviceTemplates || [])
+    .slice()
+    .sort((a, b) => (a.sortOrder || 999) - (b.sortOrder || 999) || (a.label || '').localeCompare(b.label || ''));
+}
+
+function getServiceTemplate(templateId) {
+  return (state.db.serviceTemplates || []).find(t => t.id === templateId) || null;
+}
+
+function getWeekdayName(dateStr) {
+  if (!dateStr) return '';
+  return new Date(`${dateStr}T00:00:00`).toLocaleDateString(undefined, { weekday: 'long' });
+}
+
+function buildServiceEventName(template, customTitle, customName) {
+  if (!template || template === 'custom') return customName;
+  return customTitle ? `${customTitle} (${template.label})` : template.label;
+}
+
+function getFilteredMembersForView({ members, search = '', areaId = '', g12Id = '', level = '', from = '', to = '', memberTab = state.memberTab, growthFocus = state.growthFocus }) {
+  return members.filter(member => {
+    const dateOnly = (member.createdAt || '').slice(0, 10);
+    const memberLevel = getMemberLevel(member.id);
+    const tabMatch = memberTab === 'members'
+      || (memberTab === 'new' && memberLevel === LEVELS.new)
+      || (memberTab === 'consistent' && memberLevel === LEVELS.consistent)
+      || (memberTab === 'strong' && memberLevel === LEVELS.strong);
+    const fromMatch = !from || dateOnly >= from;
+    const toMatch = !to || dateOnly <= to;
+    const searchMatch = !search || member.fullName.toLowerCase().includes(search) || member.phone.toLowerCase().includes(search);
+    const levelMatch = !level || memberLevel === level;
+    const areaMatch = !areaId || member.areaId === areaId;
+    const g12Match = !g12Id || member.g12PastorId === g12Id;
+    const growthMatch = growthFocus === 'members' || (growthFocus === 'new' && memberLevel === LEVELS.new) || (growthFocus === 'consistent' && memberLevel === LEVELS.consistent) || (growthFocus === 'strong' && memberLevel === LEVELS.strong);
+    return tabMatch && fromMatch && toMatch && searchMatch && levelMatch && areaMatch && g12Match && growthMatch;
+  });
+}
+
+function getAbsenteesForEvent(eventId, filters = state.absenceFilters) {
+  const attendees = new Set(state.db.attendance.filter(a => a.eventId === eventId).map(a => a.memberId));
+  let members = state.db.members.slice();
+  if (filters.areaId) members = members.filter(member => member.areaId === filters.areaId);
+  if (filters.g12Id) members = members.filter(member => member.g12PastorId === filters.g12Id);
+  if (filters.level) members = members.filter(member => getMemberLevel(member.id) === filters.level);
+  return members.filter(member => !attendees.has(member.id)).sort((a, b) => a.fullName.localeCompare(b.fullName));
 }
 
 function getMembersForUser(user) {
@@ -889,6 +952,10 @@ function renderMembers() {
           <tbody>${listHtml || `<tr><td colspan="7">No members found.</td></tr>`}</tbody>
         </table>
       </div>
+      <div class="inline-actions section-gap-top">
+        <button class="btn secondary tiny" type="button" data-show-more-members>Show More</button>
+        <button class="btn secondary tiny" type="button" data-show-less-members>Show Less</button>
+      </div>
     </section>
   `;
 }
@@ -1056,24 +1123,45 @@ function renderG12Groups() {
 function renderAttendance() {
   const user = state.session;
   const events = state.db.serviceEvents.slice().sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
-  const members = state.db.members.slice().sort((a, b) => a.fullName.localeCompare(b.fullName));
+  const templates = getServiceTemplates();
+  const selectedEventId = state.selectedAttendanceEventId || '';
 
   return `
-    <section class="two-col">
+    <section class="two-col top-align">
       <div class="card">
         <h3>Create / Open Service</h3>
         ${user.role === 'admin' ? `
           <form id="serviceForm" class="form-grid">
             <div class="field"><label>Date</label><input type="date" name="date" value="${todayStr()}" required /></div>
             <div class="field"><label>Service Type</label>
-              <select name="template">
-                ${STATIC_SERVICE_TYPES.map(type => `<option value="${escapeHtml(type)}">${escapeHtml(type)}</option>`).join('')}
-                <option value="custom">Custom Activity</option>
+              <select name="templateId" id="serviceTemplateSelect">
+                ${templates.map(template => `<option value="${template.id}">${escapeHtml(template.label)} • ${escapeHtml(template.dayOfWeek || template.category)}</option>`).join('')}
+                <option value="custom">Custom Activity / Conference</option>
               </select>
             </div>
+            <div class="field" style="grid-column:1/-1;"><label>Optional Service Name / Theme</label><input name="customTitle" placeholder="Example: Love Service, Easter Service" /></div>
             <div class="field hidden" data-custom-service-field style="grid-column:1/-1;"><label>Custom Service / Conference / Activity</label><input name="customName" placeholder="Enter custom activity name" /></div>
             <div class="inline-actions" style="grid-column:1/-1;">
               <button class="btn" type="submit">Create Event</button>
+            </div>
+          </form>
+          <div class="section-gap-top"></div>
+          <form id="serviceTemplateForm" class="form-grid">
+            <div class="field"><label>New Statutory Service Name</label><input name="label" placeholder="Example: Friday Prayer Service" required /></div>
+            <div class="field"><label>Day of Week</label>
+              <select name="dayOfWeek" required>
+                ${['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'].map(day => `<option value="${day}">${day}</option>`).join('')}
+              </select>
+            </div>
+            <div class="field"><label>Category</label>
+              <select name="category">
+                <option value="Sunday">Sunday</option>
+                <option value="Midweek">Midweek</option>
+                <option value="Statutory">Statutory</option>
+              </select>
+            </div>
+            <div class="inline-actions">
+              <button class="btn secondary" type="submit">Add Statutory Service Day</button>
             </div>
           </form>
         ` : `<div class="notice">Attendance marking is read-only for your role. Church Admin alone can create services and tick attendance.</div>`}
@@ -1083,16 +1171,16 @@ function renderAttendance() {
         <div class="field"><label>Open an existing event</label>
           <select id="attendanceEventSelect">
             <option value="">Select event</option>
-            ${events.map(event => `<option value="${event.id}">${escapeHtml(event.name)} — ${fmtDate(event.date)}</option>`).join('')}
+            ${events.map(event => `<option value="${event.id}" ${selectedEventId === event.id ? 'selected' : ''}>${escapeHtml(event.name)} — ${fmtDate(event.date)}</option>`).join('')}
           </select>
         </div>
-        <div class="footer-note">Sunday shifts, midweek service, and all custom activities appear here.</div>
+        <div class="footer-note">Sunday 1st, 2nd, 3rd, 4th, midweek service, and all custom activities appear here. Statutory service dates always come from the calendar date you choose.</div>
       </div>
     </section>
 
     <section class="card">
       <div id="attendanceWorkspace">
-        <div class="empty">Select a service event above to mark or review attendance.</div>
+        ${selectedEventId ? renderAttendanceWorkspace(selectedEventId) : `<div class="empty">Select a service event above to mark or review attendance.</div>`}
       </div>
     </section>
   `;
@@ -1104,11 +1192,14 @@ function renderAttendanceWorkspace(eventId) {
   const user = state.session;
   const attendees = state.db.attendance.filter(a => a.eventId === eventId);
   const members = state.db.members.slice().sort((a, b) => a.fullName.localeCompare(b.fullName));
+  const absentees = getAbsenteesForEvent(eventId);
+  const attendanceRate = members.length ? Math.round((attendees.length / members.length) * 100) : 0;
+  const pastors = state.db.users.filter(u => u.role === 'g12').slice().sort((a, b) => (a.className || a.name).localeCompare(b.className || b.name));
   return `
-    <div class="two-col">
+    <div class="two-col top-align">
       <div>
         <h3>${escapeHtml(event.name)}</h3>
-        <p class="page-subtitle">${fmtDate(event.date)} • ${escapeHtml(event.category)}</p>
+        <p class="page-subtitle">${fmtDate(event.date)} • ${escapeHtml(event.category)} • ${escapeHtml(getWeekdayName(event.date))}</p>
         <div class="toolbar">
           <div class="field"><label>Search Member</label><input id="attendanceSearch" placeholder="Search member name" /></div>
           <div class="field"><label>Filter Area</label>
@@ -1135,14 +1226,69 @@ function renderAttendanceWorkspace(eventId) {
           }).join('')}
         </div>
       </div>
-      <div>
+      <div class="stack-gap">
         <div class="card">
           <h3>Attendance Summary</h3>
           <div class="stat-list">
+            <div class="stat-row"><span>Total Registered Members</span><strong>${members.length}</strong></div>
             <div class="stat-row"><span>Total Attendance</span><strong>${attendees.length}</strong></div>
+            <div class="stat-row"><span>Total Absentees</span><strong>${absentees.length}</strong></div>
+            <div class="stat-row"><span>Attendance Rate</span><strong>${attendanceRate}%</strong></div>
             <div class="stat-row"><span>Attendees in a G12 Class</span><strong>${attendees.filter(a => getMember(a.memberId)?.g12PastorId).length}</strong></div>
             <div class="stat-row"><span>Areas Represented</span><strong>${new Set(attendees.map(a => getMember(a.memberId)?.areaId).filter(Boolean)).size}</strong></div>
           </div>
+        </div>
+        <div class="card">
+          <h3>Absentees After Service</h3>
+          <div class="toolbar compact-toolbar">
+            <div class="field"><label>Area</label>
+              <select id="absenceAreaFilter">
+                <option value="">All registered members</option>
+                ${state.db.areas.map(area => `<option value="${area.id}" ${state.absenceFilters.areaId === area.id ? 'selected' : ''}>${escapeHtml(area.name)}</option>`).join('')}
+              </select>
+            </div>
+            <div class="field"><label>G12 Class</label>
+              <select id="absenceG12Filter">
+                <option value="">All G12 classes</option>
+                ${pastors.map(pastor => `<option value="${pastor.id}" ${state.absenceFilters.g12Id === pastor.id ? 'selected' : ''}>${escapeHtml(pastor.className || pastor.name)}</option>`).join('')}
+              </select>
+            </div>
+            <div class="field"><label>Level</label>
+              <select id="absenceLevelFilter">
+                <option value="">All levels</option>
+                <option value="${LEVELS.new}" ${state.absenceFilters.level === LEVELS.new ? 'selected' : ''}>${LEVELS.new}</option>
+                <option value="${LEVELS.consistent}" ${state.absenceFilters.level === LEVELS.consistent ? 'selected' : ''}>${LEVELS.consistent}</option>
+                <option value="${LEVELS.strong}" ${state.absenceFilters.level === LEVELS.strong ? 'selected' : ''}>${LEVELS.strong}</option>
+              </select>
+            </div>
+          </div>
+          <div class="inline-actions section-gap-top">
+            <button class="btn tiny" type="button" data-message-absentees-all="${event.id}">Message All Absentees</button>
+            <button class="btn secondary tiny" type="button" data-message-absentees-selected="${event.id}">Message Selected</button>
+          </div>
+          <div class="table-wrap section-gap-top">
+            <table>
+              <thead>
+                <tr><th></th><th>Name</th><th>Area</th><th>G12 Class</th><th>Level</th><th>Phone</th></tr>
+              </thead>
+              <tbody>
+                ${absentees.length ? absentees.map(member => {
+                  const profile = getMemberProfile(member);
+                  return `
+                    <tr>
+                      <td><input type="checkbox" data-absentee-checkbox value="${member.id}" /></td>
+                      <td><button class="link-btn" type="button" data-open-member="${member.id}">${escapeHtml(member.fullName)}</button></td>
+                      <td>${escapeHtml(profile.areaName)}</td>
+                      <td>${escapeHtml(profile.g12Class)}</td>
+                      <td><span class="badge ${profile.level === LEVELS.strong ? 'success' : profile.level === LEVELS.consistent ? 'warn' : ''}">${escapeHtml(profile.level)}</span></td>
+                      <td>${escapeHtml(member.phone)}</td>
+                    </tr>
+                  `;
+                }).join('') : `<tr><td colspan="6">No absentees match the current filters.</td></tr>`}
+              </tbody>
+            </table>
+          </div>
+          <div class="footer-note">Absentees are calculated from all registered members by default. Use the filters above to narrow the follow-up list.</div>
         </div>
       </div>
     </div>
@@ -1554,6 +1700,7 @@ function bindAppEvents() {
   q('#areaForm')?.addEventListener('submit', handleAddArea);
   q('#createG12ClassForm')?.addEventListener('submit', handleCreateG12Class);
   q('#serviceForm')?.addEventListener('submit', handleCreateService);
+  q('#serviceTemplateForm')?.addEventListener('submit', handleAddServiceTemplate);
   q('#prospectForm')?.addEventListener('submit', handleAddProspect);
   q('#messageForm')?.addEventListener('submit', handleSendMessageNow);
   q('#saveMessageRuleBtn')?.addEventListener('click', handleSaveMessageRule);
@@ -1587,14 +1734,16 @@ function bindAppEvents() {
   q('#messageAudienceType')?.addEventListener('change', syncMessageAudienceVisibility);
   syncMessageAudienceVisibility();
 
-  q('select[name="template"]')?.addEventListener('change', (e) => {
+  q('#serviceTemplateSelect')?.addEventListener('change', (e) => {
     q('[data-custom-service-field]')?.classList.toggle('hidden', e.target.value !== 'custom');
   });
 
   q('#attendanceEventSelect')?.addEventListener('change', (e) => {
-    q('#attendanceWorkspace').innerHTML = renderAttendanceWorkspace(e.target.value);
+    state.selectedAttendanceEventId = e.target.value;
+    q('#attendanceWorkspace').innerHTML = e.target.value ? renderAttendanceWorkspace(e.target.value) : '<div class="empty">Select a service event above to mark or review attendance.</div>' ;
     bindAttendanceWorkspace();
   });
+  if (state.selectedAttendanceEventId) bindAttendanceWorkspace();
 
   qq('[data-open-member]').forEach(btn => btn.addEventListener('click', () => {
     state.modalMemberId = btn.dataset.openMember;
@@ -1629,9 +1778,11 @@ function bindAppEvents() {
   }));
 
   ['#memberDateFrom', '#memberDateTo', '#memberSearch', '#memberLevelFilter'].forEach(sel => {
-    q(sel)?.addEventListener('input', applyMemberFilters);
-    q(sel)?.addEventListener('change', applyMemberFilters);
+    q(sel)?.addEventListener('input', () => { state.memberPageCount = 50; applyMemberFilters(); });
+    q(sel)?.addEventListener('change', () => { state.memberPageCount = 50; applyMemberFilters(); });
   });
+  q('[data-show-more-members]')?.addEventListener('click', () => { state.memberPageCount += 50; applyMemberFilters(); });
+  q('[data-show-less-members]')?.addEventListener('click', () => { state.memberPageCount = 50; applyMemberFilters(); });
   applyMemberFilters();
 
   qq('[data-message-single-member]').forEach(btn => btn.addEventListener('click', () => {
@@ -1746,31 +1897,62 @@ function handleRemoveAreaConfirmed(areaId) {
 function handleCreateService(event) {
   event.preventDefault();
   const fd = new FormData(event.target);
-  const template = String(fd.get('template'));
+  const templateId = String(fd.get('templateId'));
+  const template = templateId === 'custom' ? 'custom' : getServiceTemplate(templateId);
+  const customTitle = String(fd.get('customTitle') || '').trim();
   const customName = String(fd.get('customName') || '').trim();
-  const name = template === 'custom' ? customName : template;
+  const name = buildServiceEventName(template, customTitle, customName);
   if (!name) {
     showNotice('Enter the custom service or activity name.', 'error');
     render();
     return;
   }
-  const category = template === 'custom'
-    ? 'Custom'
-    : template.startsWith('Sunday')
-      ? 'Sunday'
-      : 'Midweek';
+  const date = String(fd.get('date') || '');
+  if (!date) {
+    showNotice('Choose a calendar date for this service.', 'error');
+    render();
+    return;
+  }
   const eventObj = {
     id: uid('event'),
     name,
-    category,
-    date: String(fd.get('date')),
+    category: template === 'custom' ? 'Custom' : (template?.category || 'Statutory'),
+    date,
     custom: template === 'custom',
+    templateId: template === 'custom' ? '' : template.id,
     createdAt: nowStr(),
     createdByUserId: state.session.id,
   };
   state.db.serviceEvents.push(eventObj);
+  state.selectedAttendanceEventId = eventObj.id;
   saveDb();
+  event.target.reset();
   showNotice('Service event created. Select it from the list to mark attendance.');
+  render();
+}
+
+function handleAddServiceTemplate(event) {
+  event.preventDefault();
+  const fd = new FormData(event.target);
+  const label = String(fd.get('label') || '').trim();
+  const dayOfWeek = String(fd.get('dayOfWeek') || '').trim();
+  const category = String(fd.get('category') || 'Statutory').trim();
+  if (!label || !dayOfWeek) {
+    showNotice('Complete the statutory service details first.', 'error');
+    render();
+    return;
+  }
+  state.db.serviceTemplates.push({
+    id: uid('tmpl'),
+    label,
+    dayOfWeek,
+    category,
+    isStatutory: true,
+    sortOrder: 100 + state.db.serviceTemplates.length,
+  });
+  saveDb();
+  event.target.reset();
+  showNotice('Statutory service day added successfully.');
   render();
 }
 
@@ -1899,6 +2081,11 @@ function bindAttendanceWorkspace() {
   qq('[data-attendance-member]').forEach(box => box.addEventListener('change', handleAttendanceToggle));
   q('#attendanceSearch')?.addEventListener('input', applyAttendanceFilters);
   q('#attendanceAreaFilter')?.addEventListener('change', applyAttendanceFilters);
+  q('#absenceAreaFilter')?.addEventListener('change', handleAbsenceFilterChange);
+  q('#absenceG12Filter')?.addEventListener('change', handleAbsenceFilterChange);
+  q('#absenceLevelFilter')?.addEventListener('change', handleAbsenceFilterChange);
+  q('[data-message-absentees-all]')?.addEventListener('click', () => handleAbsenteeMessaging('all'));
+  q('[data-message-absentees-selected]')?.addEventListener('click', () => handleAbsenteeMessaging('selected'));
 }
 
 function handleAttendanceToggle(event) {
@@ -1912,8 +2099,37 @@ function handleAttendanceToggle(event) {
     state.db.attendance = state.db.attendance.filter(a => !(a.memberId === memberId && a.eventId === eventId));
   }
   saveDb();
+  state.selectedAttendanceEventId = eventId;
   q('#attendanceWorkspace').innerHTML = renderAttendanceWorkspace(eventId);
   bindAttendanceWorkspace();
+}
+
+function handleAbsenceFilterChange() {
+  state.absenceFilters = {
+    areaId: q('#absenceAreaFilter')?.value || '',
+    g12Id: q('#absenceG12Filter')?.value || '',
+    level: q('#absenceLevelFilter')?.value || '',
+  };
+  if (!state.selectedAttendanceEventId) return;
+  q('#attendanceWorkspace').innerHTML = renderAttendanceWorkspace(state.selectedAttendanceEventId);
+  bindAttendanceWorkspace();
+}
+
+function handleAbsenteeMessaging(mode = 'all') {
+  const eventId = state.selectedAttendanceEventId;
+  if (!eventId) return;
+  const eventObj = state.db.serviceEvents.find(item => item.id === eventId);
+  let targets = getAbsenteesForEvent(eventId);
+  if (mode === 'selected') {
+    const selectedIds = qq('[data-absentee-checkbox]:checked').map(box => box.value);
+    targets = targets.filter(member => selectedIds.includes(member.id));
+  }
+  if (!targets.length) {
+    showNotice(mode === 'selected' ? 'Select at least one absentee first.' : 'No absentees match the current filters.', 'error');
+    render();
+    return;
+  }
+  openWhatsappForTargets(targets, `Hello {name}, we missed you at ${eventObj?.name || 'service'} today at Refiners City International Church. We hope you are well and would love to see you again.`);
 }
 
 function applyAttendanceFilters() {
@@ -1935,25 +2151,18 @@ function applyMemberFilters() {
   const levelFilter = q('#memberLevelFilter')?.value || '';
   const user = state.session;
   let members = getMembersForUser(user).slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-
-  members = members.filter(member => {
-    const dateOnly = member.createdAt.slice(0, 10);
-    const level = getMemberLevel(member.id);
-    const tabMatch = state.memberTab === 'members'
-      || (state.memberTab === 'new' && level === LEVELS.new)
-      || (state.memberTab === 'consistent' && level === LEVELS.consistent)
-      || (state.memberTab === 'strong' && level === LEVELS.strong);
-    const fromMatch = !from || dateOnly >= from;
-    const toMatch = !to || dateOnly <= to;
-    const searchMatch = !search || member.fullName.toLowerCase().includes(search) || member.phone.toLowerCase().includes(search);
-    const levelMatch = !levelFilter || level === levelFilter;
-    const areaMatch = !state.areaFocusId || member.areaId === state.areaFocusId;
-    const g12Match = !state.g12FocusId || member.g12PastorId === state.g12FocusId;
-    const growthMatch = state.growthFocus === 'members' || (state.growthFocus === 'new' && level === LEVELS.new) || (state.growthFocus === 'consistent' && level === LEVELS.consistent) || (state.growthFocus === 'strong' && level === LEVELS.strong);
-    return tabMatch && fromMatch && toMatch && searchMatch && levelMatch && areaMatch && g12Match && growthMatch;
+  members = getFilteredMembersForView({
+    members,
+    from,
+    to,
+    search,
+    level: levelFilter,
+    areaId: state.areaFocusId,
+    g12Id: state.g12FocusId,
   });
 
-  table.innerHTML = members.length ? members.map(member => {
+  const visibleMembers = members.slice(0, state.memberPageCount);
+  table.innerHTML = visibleMembers.length ? visibleMembers.map(member => {
     const profile = getMemberProfile(member);
     return `
       <tr>
@@ -1972,6 +2181,11 @@ function applyMemberFilters() {
     state.modalMemberId = btn.dataset.openMember;
     render();
   }));
+
+  const moreBtn = q('[data-show-more-members]');
+  const lessBtn = q('[data-show-less-members]');
+  if (moreBtn) moreBtn.disabled = visibleMembers.length >= members.length;
+  if (lessBtn) lessBtn.disabled = state.memberPageCount <= 50;
 }
 
 function syncMessageAudienceVisibility() {
