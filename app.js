@@ -6,6 +6,14 @@ const app = q('#app');
 
 const uid = (prefix) => `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
 const todayStr = () => new Date().toISOString().slice(0, 10);
+const isoDate = (date) => date.toISOString().slice(0, 10);
+const nextWeekdayDate = (weekdayIndex) => {
+  const date = new Date();
+  date.setHours(0, 0, 0, 0);
+  const diff = (weekdayIndex - date.getDay() + 7) % 7;
+  date.setDate(date.getDate() + diff);
+  return isoDate(date);
+};
 const nowStr = () => new Date().toISOString();
 const fmtDate = (value) => value ? new Date(value).toLocaleDateString() : '—';
 const fmtDateTime = (value) => value ? new Date(value).toLocaleString() : '—';
@@ -40,6 +48,42 @@ function defaultServiceTemplates() {
     { id: 'tmpl_sun_4', label: 'Sunday 4th Service', category: 'Sunday', dayOfWeek: 'Sunday', isStatutory: true, sortOrder: 4 },
     { id: 'tmpl_midweek', label: 'Midweek Service', category: 'Midweek', dayOfWeek: 'Wednesday', isStatutory: true, sortOrder: 5 },
   ];
+}
+
+
+function ensureDefaultServiceTemplates(db) {
+  db.serviceTemplates ||= [];
+  defaultServiceTemplates().forEach(template => {
+    if (!db.serviceTemplates.some(item => item.id === template.id || item.label === template.label)) {
+      db.serviceTemplates.push({ ...template });
+    }
+  });
+}
+
+function defaultExistingServiceEvents(adminId = '') {
+  const sunday = nextWeekdayDate(0);
+  const wednesday = nextWeekdayDate(3);
+  return defaultServiceTemplates().map(template => ({
+    id: uid('event'),
+    name: template.label,
+    category: template.category,
+    date: template.dayOfWeek === 'Wednesday' ? wednesday : sunday,
+    custom: false,
+    templateId: template.id,
+    isDefaultSeed: true,
+    createdByUserId: adminId,
+    createdAt: nowStr(),
+  }));
+}
+
+function ensureDefaultExistingServices(db) {
+  db.serviceEvents ||= [];
+  const adminId = db.users?.find(user => user.role === 'admin')?.id || '';
+  defaultExistingServiceEvents(adminId).forEach(eventObj => {
+    if (!db.serviceEvents.some(item => item.templateId === eventObj.templateId && item.date === eventObj.date)) {
+      db.serviceEvents.push(eventObj);
+    }
+  });
 }
 
 const ROLE_LABELS = {
@@ -80,6 +124,8 @@ function loadDb() {
     parsed.prospects ||= [];
     parsed.serviceTemplates ||= defaultServiceTemplates();
     parsed.serviceEvents ||= [];
+    ensureDefaultServiceTemplates(parsed);
+    ensureDefaultExistingServices(parsed);
     parsed.attendance ||= [];
     parsed.members ||= [];
     parsed.areas ||= [];
@@ -100,6 +146,11 @@ function loadDb() {
   const prospect1 = uid('prospect');
   const event1 = uid('event');
   const event2 = uid('event');
+  const event3 = uid('event');
+  const event4 = uid('event');
+  const event5 = uid('event');
+  const nextSunday = nextWeekdayDate(0);
+  const nextWednesday = nextWeekdayDate(3);
   const thisYear = new Date().getFullYear();
 
   return {
@@ -150,8 +201,11 @@ function loadDb() {
     ],
     serviceTemplates: defaultServiceTemplates(),
     serviceEvents: [
-      { id: event1, name: 'Sunday 1st Service', category: 'Sunday', date: todayStr(), custom: false, createdByUserId: adminId, createdAt: nowStr() },
-      { id: event2, name: 'Midweek Service', category: 'Midweek', date: todayStr(), custom: false, createdByUserId: adminId, createdAt: nowStr() },
+      { id: event1, name: 'Sunday 1st Service', category: 'Sunday', date: nextSunday, custom: false, templateId: 'tmpl_sun_1', isDefaultSeed: true, createdByUserId: adminId, createdAt: nowStr() },
+      { id: event2, name: 'Sunday 2nd Service', category: 'Sunday', date: nextSunday, custom: false, templateId: 'tmpl_sun_2', isDefaultSeed: true, createdByUserId: adminId, createdAt: nowStr() },
+      { id: event3, name: 'Sunday 3rd Service', category: 'Sunday', date: nextSunday, custom: false, templateId: 'tmpl_sun_3', isDefaultSeed: true, createdByUserId: adminId, createdAt: nowStr() },
+      { id: event4, name: 'Sunday 4th Service', category: 'Sunday', date: nextSunday, custom: false, templateId: 'tmpl_sun_4', isDefaultSeed: true, createdByUserId: adminId, createdAt: nowStr() },
+      { id: event5, name: 'Midweek Service', category: 'Midweek', date: nextWednesday, custom: false, templateId: 'tmpl_midweek', isDefaultSeed: true, createdByUserId: adminId, createdAt: nowStr() },
     ],
     attendance: [
       { id: uid('att'), eventId: event1, memberId: member1, markedByUserId: adminId, createdAt: nowStr() },
@@ -1137,31 +1191,26 @@ function renderAttendance() {
               <select name="templateId" id="serviceTemplateSelect">
                 ${templates.map(template => `<option value="${template.id}">${escapeHtml(template.label)} • ${escapeHtml(template.dayOfWeek || template.category)}</option>`).join('')}
                 <option value="custom">Custom Activity / Conference</option>
+                <option value="add_statutory">Add New Statutory Service Day</option>
               </select>
             </div>
             <div class="field" style="grid-column:1/-1;"><label>Optional Service Name / Theme</label><input name="customTitle" placeholder="Example: Love Service, Easter Service" /></div>
             <div class="field hidden" data-custom-service-field style="grid-column:1/-1;"><label>Custom Service / Conference / Activity</label><input name="customName" placeholder="Enter custom activity name" /></div>
-            <div class="inline-actions" style="grid-column:1/-1;">
-              <button class="btn" type="submit">Create Event</button>
-            </div>
-          </form>
-          <div class="section-gap-top"></div>
-          <form id="serviceTemplateForm" class="form-grid">
-            <div class="field"><label>New Statutory Service Name</label><input name="label" placeholder="Example: Friday Prayer Service" required /></div>
-            <div class="field"><label>Day of Week</label>
-              <select name="dayOfWeek" required>
+            <div class="field hidden" data-new-statutory-field><label>New Statutory Service Name</label><input name="newStatutoryName" placeholder="Example: Friday Prayer Service" /></div>
+            <div class="field hidden" data-new-statutory-field><label>Day of Week</label>
+              <select name="newStatutoryDay">
                 ${['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'].map(day => `<option value="${day}">${day}</option>`).join('')}
               </select>
             </div>
-            <div class="field"><label>Category</label>
-              <select name="category">
+            <div class="field hidden" data-new-statutory-field><label>Category</label>
+              <select name="newStatutoryCategory">
                 <option value="Sunday">Sunday</option>
                 <option value="Midweek">Midweek</option>
                 <option value="Statutory">Statutory</option>
               </select>
             </div>
-            <div class="inline-actions">
-              <button class="btn secondary" type="submit">Add Statutory Service Day</button>
+            <div class="inline-actions" style="grid-column:1/-1;">
+              <button class="btn" type="submit">Create Event</button>
             </div>
           </form>
         ` : `<div class="notice">Attendance marking is read-only for your role. Church Admin alone can create services and tick attendance.</div>`}
@@ -1174,7 +1223,7 @@ function renderAttendance() {
             ${events.map(event => `<option value="${event.id}" ${selectedEventId === event.id ? 'selected' : ''}>${escapeHtml(event.name)} — ${fmtDate(event.date)}</option>`).join('')}
           </select>
         </div>
-        <div class="footer-note">Sunday 1st, 2nd, 3rd, 4th, midweek service, and all custom activities appear here. Statutory service dates always come from the calendar date you choose.</div>
+        <div class="footer-note">Sunday 1st, 2nd, 3rd, 4th, Wednesday midweek, and all custom activities appear here. Service dates always come from the calendar date you choose.</div>
       </div>
     </section>
 
@@ -1700,7 +1749,6 @@ function bindAppEvents() {
   q('#areaForm')?.addEventListener('submit', handleAddArea);
   q('#createG12ClassForm')?.addEventListener('submit', handleCreateG12Class);
   q('#serviceForm')?.addEventListener('submit', handleCreateService);
-  q('#serviceTemplateForm')?.addEventListener('submit', handleAddServiceTemplate);
   q('#prospectForm')?.addEventListener('submit', handleAddProspect);
   q('#messageForm')?.addEventListener('submit', handleSendMessageNow);
   q('#saveMessageRuleBtn')?.addEventListener('click', handleSaveMessageRule);
@@ -1735,7 +1783,10 @@ function bindAppEvents() {
   syncMessageAudienceVisibility();
 
   q('#serviceTemplateSelect')?.addEventListener('change', (e) => {
-    q('[data-custom-service-field]')?.classList.toggle('hidden', e.target.value !== 'custom');
+    const isCustom = e.target.value === 'custom';
+    const isNewStatutory = e.target.value === 'add_statutory';
+    q('[data-custom-service-field]')?.classList.toggle('hidden', !isCustom);
+    qq('[data-new-statutory-field]').forEach(field => field.classList.toggle('hidden', !isNewStatutory));
   });
 
   q('#attendanceEventSelect')?.addEventListener('change', (e) => {
@@ -1898,18 +1949,37 @@ function handleCreateService(event) {
   event.preventDefault();
   const fd = new FormData(event.target);
   const templateId = String(fd.get('templateId'));
-  const template = templateId === 'custom' ? 'custom' : getServiceTemplate(templateId);
+  let template = templateId === 'custom' ? 'custom' : getServiceTemplate(templateId);
   const customTitle = String(fd.get('customTitle') || '').trim();
   const customName = String(fd.get('customName') || '').trim();
-  const name = buildServiceEventName(template, customTitle, customName);
-  if (!name) {
-    showNotice('Enter the custom service or activity name.', 'error');
-    render();
-    return;
-  }
   const date = String(fd.get('date') || '');
   if (!date) {
     showNotice('Choose a calendar date for this service.', 'error');
+    render();
+    return;
+  }
+  if (templateId === 'add_statutory') {
+    const label = String(fd.get('newStatutoryName') || '').trim();
+    const dayOfWeek = String(fd.get('newStatutoryDay') || '').trim();
+    const category = String(fd.get('newStatutoryCategory') || 'Statutory').trim();
+    if (!label || !dayOfWeek) {
+      showNotice('Complete the new statutory service details first.', 'error');
+      render();
+      return;
+    }
+    template = {
+      id: uid('tmpl'),
+      label,
+      dayOfWeek,
+      category,
+      isStatutory: true,
+      sortOrder: 100 + state.db.serviceTemplates.length,
+    };
+    state.db.serviceTemplates.push(template);
+  }
+  const name = buildServiceEventName(template, customTitle, customName);
+  if (!name) {
+    showNotice('Enter the custom service or activity name.', 'error');
     render();
     return;
   }
@@ -1927,7 +1997,7 @@ function handleCreateService(event) {
   state.selectedAttendanceEventId = eventObj.id;
   saveDb();
   event.target.reset();
-  showNotice('Service event created. Select it from the list to mark attendance.');
+  showNotice(templateId === 'add_statutory' ? 'Statutory service day added and event created.' : 'Service event created. Select it from the list to mark attendance.');
   render();
 }
 
