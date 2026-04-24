@@ -1179,57 +1179,62 @@ function renderAttendance() {
   const events = state.db.serviceEvents.slice().sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
   const templates = getServiceTemplates();
   const selectedEventId = state.selectedAttendanceEventId || '';
+  const selectedEvent = state.db.serviceEvents.find(e => e.id === selectedEventId);
 
   return `
-    <section class="two-col top-align">
-      <div class="card">
-        <h3>Create / Open Service</h3>
-        ${user.role === 'admin' ? `
-          <form id="serviceForm" class="form-grid">
-            <div class="field"><label>Date</label><input type="date" name="date" value="${todayStr()}" required /></div>
-            <div class="field"><label>Service Type</label>
-              <select name="templateId" id="serviceTemplateSelect">
-                ${templates.map(template => `<option value="${template.id}">${escapeHtml(template.label)} • ${escapeHtml(template.dayOfWeek || template.category)}</option>`).join('')}
-                <option value="custom">Custom Activity / Conference</option>
-                <option value="add_statutory">Add New Statutory Service Day</option>
-              </select>
-            </div>
-            <div class="field" style="grid-column:1/-1;"><label>Optional Service Name / Theme</label><input name="customTitle" placeholder="Example: Love Service, Easter Service" /></div>
-            <div class="field hidden" data-custom-service-field style="grid-column:1/-1;"><label>Custom Service / Conference / Activity</label><input name="customName" placeholder="Enter custom activity name" /></div>
-            <div class="field hidden" data-new-statutory-field><label>New Statutory Service Name</label><input name="newStatutoryName" placeholder="Example: Friday Prayer Service" /></div>
-            <div class="field hidden" data-new-statutory-field><label>Day of Week</label>
-              <select name="newStatutoryDay">
-                ${['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'].map(day => `<option value="${day}">${day}</option>`).join('')}
-              </select>
-            </div>
-            <div class="field hidden" data-new-statutory-field><label>Category</label>
-              <select name="newStatutoryCategory">
-                <option value="Sunday">Sunday</option>
-                <option value="Midweek">Midweek</option>
-                <option value="Statutory">Statutory</option>
-              </select>
-            </div>
-            <div class="inline-actions" style="grid-column:1/-1;">
-              <button class="btn" type="submit">Create Event</button>
-            </div>
-          </form>
-        ` : `<div class="notice">Attendance marking is read-only for your role. Church Admin alone can create services and tick attendance.</div>`}
-      </div>
-      <div class="card">
-        <h3>Choose Event</h3>
-        <div class="field"><label>Open an existing event</label>
-          <select id="attendanceEventSelect">
-            <option value="">Select event</option>
-            ${events.map(event => `<option value="${event.id}" ${selectedEventId === event.id ? 'selected' : ''}>${escapeHtml(event.name)} — ${fmtDate(event.date)}</option>`).join('')}
-          </select>
+    <section class="attendance-flow-card card">
+      <div class="flow-heading">
+        <div>
+          <h3>1. Start a Service</h3>
+          <p class="footer-note">Pick the service, choose the date from the calendar, optionally name it, then start marking attendance.</p>
         </div>
-        <div class="footer-note">Sunday 1st, 2nd, 3rd, 4th, Wednesday midweek, and all custom activities appear here. Service dates always come from the calendar date you choose.</div>
+        ${selectedEvent ? `<span class="badge success">Open: ${escapeHtml(selectedEvent.name)}</span>` : `<span class="badge neutral">No service open</span>`}
+      </div>
+      ${user.role === 'admin' ? `
+        <form id="serviceForm" class="form-grid service-start-grid">
+          <div class="field"><label>Service Date</label><input type="date" name="date" value="${todayStr()}" required /></div>
+          <div class="field"><label>Service Type</label>
+            <select name="templateId" id="serviceTemplateSelect">
+              ${templates.map(template => `<option value="${template.id}">${escapeHtml(template.label)} • ${escapeHtml(template.dayOfWeek || template.category)}</option>`).join('')}
+              <option value="custom">Custom Activity / Conference</option>
+              <option value="add_statutory">Add New Statutory Service Day</option>
+            </select>
+          </div>
+          <div class="field"><label>Optional Service Name / Theme</label><input name="customTitle" placeholder="Example: Love Service, Easter Service" /></div>
+          <div class="field hidden" data-custom-service-field><label>Custom Activity Name</label><input name="customName" placeholder="Example: Youth Conference" /></div>
+          <div class="field hidden" data-new-statutory-field><label>New Statutory Service Name</label><input name="newStatutoryName" placeholder="Example: Friday Prayer Service" /></div>
+          <div class="field hidden" data-new-statutory-field><label>Day of Week</label>
+            <select name="newStatutoryDay">
+              ${['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'].map(day => `<option value="${day}">${day}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field hidden" data-new-statutory-field><label>Category</label>
+            <select name="newStatutoryCategory"><option value="Sunday">Sunday</option><option value="Midweek">Midweek</option><option value="Statutory">Statutory</option></select>
+          </div>
+          <div class="inline-actions service-start-actions"><button class="btn" type="submit">Start Service & Mark Attendance</button></div>
+        </form>
+      ` : `<div class="notice">Attendance marking is read-only for your role. Church Admin alone can create services and tick attendance.</div>`}
+    </section>
+
+    <section class="card service-history-card">
+      <div class="flow-heading"><div><h3>2. Service History</h3><p class="footer-note">Open any saved service by date or name to review attendance and absentees.</p></div></div>
+      <div class="toolbar compact-toolbar service-history-filters">
+        <div class="field"><label>Search Service Name</label><input id="serviceHistorySearch" placeholder="Love Service, Midweek, Easter..." /></div>
+        <div class="field"><label>From</label><input type="date" id="serviceHistoryFrom" /></div>
+        <div class="field"><label>To</label><input type="date" id="serviceHistoryTo" /></div>
+      </div>
+      <div class="service-history-list" id="serviceHistoryList">
+        ${events.length ? events.map(event => {
+          const count = state.db.attendance.filter(a => a.eventId === event.id).length;
+          const active = selectedEventId === event.id;
+          return `<button class="service-history-item ${active ? 'active' : ''}" type="button" data-open-service-event="${event.id}" data-service-name="${escapeHtml(event.name).toLowerCase()}" data-service-date="${event.date}"><div><strong>${escapeHtml(event.name)}</strong><span>${fmtDate(event.date)} • ${escapeHtml(event.category)} • ${escapeHtml(getWeekdayName(event.date))}</span></div><b>${count} present</b></button>`;
+        }).join('') : `<div class="empty">No service has been started yet.</div>`}
       </div>
     </section>
 
-    <section class="card">
+    <section class="card attendance-mark-card">
       <div id="attendanceWorkspace">
-        ${selectedEventId ? renderAttendanceWorkspace(selectedEventId) : `<div class="empty">Select a service event above to mark or review attendance.</div>`}
+        ${selectedEventId ? renderAttendanceWorkspace(selectedEventId) : `<div class="empty attendance-empty"><strong>3. Mark Attendance</strong><span>Start a new service above or open one from Service History. The member list, summary, and absentee follow-up will appear here.</span></div>`}
       </div>
     </section>
   `;
@@ -1245,102 +1250,18 @@ function renderAttendanceWorkspace(eventId) {
   const attendanceRate = members.length ? Math.round((attendees.length / members.length) * 100) : 0;
   const pastors = state.db.users.filter(u => u.role === 'g12').slice().sort((a, b) => (a.className || a.name).localeCompare(b.className || b.name));
   return `
-    <div class="two-col top-align">
-      <div>
-        <h3>${escapeHtml(event.name)}</h3>
-        <p class="page-subtitle">${fmtDate(event.date)} • ${escapeHtml(event.category)} • ${escapeHtml(getWeekdayName(event.date))}</p>
-        <div class="toolbar">
-          <div class="field"><label>Search Member</label><input id="attendanceSearch" placeholder="Search member name" /></div>
-          <div class="field"><label>Filter Area</label>
-            <select id="attendanceAreaFilter">
-              <option value="">All areas</option>
-              ${state.db.areas.map(area => `<option value="${area.id}">${escapeHtml(area.name)}</option>`).join('')}
-            </select>
-          </div>
-        </div>
-        <div class="checklist" id="attendanceChecklist">
-          ${members.map(member => {
-            const checked = attendees.some(a => a.memberId === member.id);
-            return `
-              <label class="check-row" data-attendance-row data-name="${escapeHtml(member.fullName).toLowerCase()}" data-area="${member.areaId || ''}">
-                <div>
-                  <strong>${escapeHtml(member.fullName)}</strong>
-                  <div class="member-meta">${escapeHtml(getArea(member.areaId)?.name || 'No area')} • ${escapeHtml(getUser(member.g12PastorId)?.className || 'No G12 class')}</div>
-                </div>
-                ${user.role === 'admin'
-                  ? `<input type="checkbox" data-attendance-member="${member.id}" data-event="${event.id}" ${checked ? 'checked' : ''} />`
-                  : `<span class="badge ${checked ? 'success' : 'neutral'}">${checked ? 'Present' : 'Absent'}</span>`}
-              </label>
-            `;
-          }).join('')}
+    <div class="active-service-header"><div><h3>${escapeHtml(event.name)}</h3><p class="page-subtitle">${fmtDate(event.date)} • ${escapeHtml(event.category)} • ${escapeHtml(getWeekdayName(event.date))}</p></div><div class="inline-actions"><button class="btn secondary tiny" type="button" data-close-attendance-service>Close & Save Service</button></div></div>
+    <div class="attendance-work-grid">
+      <div class="attendance-panel"><h3>Mark Present Members</h3>
+        <div class="toolbar"><div class="field"><label>Search Member</label><input id="attendanceSearch" placeholder="Search member name" /></div><div class="field"><label>Filter Area</label><select id="attendanceAreaFilter"><option value="">All areas</option>${state.db.areas.map(area => `<option value="${area.id}">${escapeHtml(area.name)}</option>`).join('')}</select></div></div>
+        ${user.role === 'admin' ? `<details class="quick-add-box"><summary>Add a new person while marking attendance</summary><form id="attendanceQuickMemberForm" class="form-grid compact-form"><input type="hidden" name="eventId" value="${event.id}" /><div class="field"><label>Full Name</label><input name="fullName" placeholder="Member name" required /></div><div class="field"><label>Phone</label><input name="phone" placeholder="Phone number" /></div><div class="field"><label>Area</label><select name="areaId"><option value="">No area yet</option>${state.db.areas.map(area => `<option value="${area.id}">${escapeHtml(area.name)}</option>`).join('')}</select></div><div class="field" style="grid-column:1/-1;"><label>Address</label><input name="address" placeholder="Address" /></div><div class="inline-actions" style="grid-column:1/-1;"><button class="btn tiny" type="submit">Add & Mark Present</button></div></form></details>` : ''}
+        <div class="checklist attendance-checklist" id="attendanceChecklist">
+          ${members.map(member => { const checked = attendees.some(a => a.memberId === member.id); return `<label class="check-row" data-attendance-row data-name="${escapeHtml(member.fullName).toLowerCase()}" data-area="${member.areaId || ''}"><div><strong>${escapeHtml(member.fullName)}</strong><div class="member-meta">${escapeHtml(getArea(member.areaId)?.name || 'No area')} • ${escapeHtml(getUser(member.g12PastorId)?.className || 'No G12 class')}</div></div>${user.role === 'admin' ? `<input type="checkbox" data-attendance-member="${member.id}" data-event="${event.id}" ${checked ? 'checked' : ''} />` : `<span class="badge ${checked ? 'success' : 'neutral'}">${checked ? 'Present' : 'Absent'}</span>`}</label>`; }).join('')}
         </div>
       </div>
-      <div class="stack-gap">
-        <div class="card">
-          <h3>Attendance Summary</h3>
-          <div class="stat-list">
-            <div class="stat-row"><span>Total Registered Members</span><strong>${members.length}</strong></div>
-            <div class="stat-row"><span>Total Attendance</span><strong>${attendees.length}</strong></div>
-            <div class="stat-row"><span>Total Absentees</span><strong>${absentees.length}</strong></div>
-            <div class="stat-row"><span>Attendance Rate</span><strong>${attendanceRate}%</strong></div>
-            <div class="stat-row"><span>Attendees in a G12 Class</span><strong>${attendees.filter(a => getMember(a.memberId)?.g12PastorId).length}</strong></div>
-            <div class="stat-row"><span>Areas Represented</span><strong>${new Set(attendees.map(a => getMember(a.memberId)?.areaId).filter(Boolean)).size}</strong></div>
-          </div>
-        </div>
-        <div class="card">
-          <h3>Absentees After Service</h3>
-          <div class="toolbar compact-toolbar">
-            <div class="field"><label>Area</label>
-              <select id="absenceAreaFilter">
-                <option value="">All registered members</option>
-                ${state.db.areas.map(area => `<option value="${area.id}" ${state.absenceFilters.areaId === area.id ? 'selected' : ''}>${escapeHtml(area.name)}</option>`).join('')}
-              </select>
-            </div>
-            <div class="field"><label>G12 Class</label>
-              <select id="absenceG12Filter">
-                <option value="">All G12 classes</option>
-                ${pastors.map(pastor => `<option value="${pastor.id}" ${state.absenceFilters.g12Id === pastor.id ? 'selected' : ''}>${escapeHtml(pastor.className || pastor.name)}</option>`).join('')}
-              </select>
-            </div>
-            <div class="field"><label>Level</label>
-              <select id="absenceLevelFilter">
-                <option value="">All levels</option>
-                <option value="${LEVELS.new}" ${state.absenceFilters.level === LEVELS.new ? 'selected' : ''}>${LEVELS.new}</option>
-                <option value="${LEVELS.consistent}" ${state.absenceFilters.level === LEVELS.consistent ? 'selected' : ''}>${LEVELS.consistent}</option>
-                <option value="${LEVELS.strong}" ${state.absenceFilters.level === LEVELS.strong ? 'selected' : ''}>${LEVELS.strong}</option>
-              </select>
-            </div>
-          </div>
-          <div class="inline-actions section-gap-top">
-            <button class="btn tiny" type="button" data-message-absentees-all="${event.id}">Message All Absentees</button>
-            <button class="btn secondary tiny" type="button" data-message-absentees-selected="${event.id}">Message Selected</button>
-          </div>
-          <div class="table-wrap section-gap-top">
-            <table>
-              <thead>
-                <tr><th></th><th>Name</th><th>Area</th><th>G12 Class</th><th>Level</th><th>Phone</th></tr>
-              </thead>
-              <tbody>
-                ${absentees.length ? absentees.map(member => {
-                  const profile = getMemberProfile(member);
-                  return `
-                    <tr>
-                      <td><input type="checkbox" data-absentee-checkbox value="${member.id}" /></td>
-                      <td><button class="link-btn" type="button" data-open-member="${member.id}">${escapeHtml(member.fullName)}</button></td>
-                      <td>${escapeHtml(profile.areaName)}</td>
-                      <td>${escapeHtml(profile.g12Class)}</td>
-                      <td><span class="badge ${profile.level === LEVELS.strong ? 'success' : profile.level === LEVELS.consistent ? 'warn' : ''}">${escapeHtml(profile.level)}</span></td>
-                      <td>${escapeHtml(member.phone)}</td>
-                    </tr>
-                  `;
-                }).join('') : `<tr><td colspan="6">No absentees match the current filters.</td></tr>`}
-              </tbody>
-            </table>
-          </div>
-          <div class="footer-note">Absentees are calculated from all registered members by default. Use the filters above to narrow the follow-up list.</div>
-        </div>
-      </div>
+      <div class="attendance-panel summary-panel"><h3>Live Summary</h3><div class="stat-list"><div class="stat-row"><span>Total Registered Members</span><strong>${members.length}</strong></div><div class="stat-row"><span>Total Attendance</span><strong>${attendees.length}</strong></div><div class="stat-row"><span>Total Absentees</span><strong>${absentees.length}</strong></div><div class="stat-row"><span>Attendance Rate</span><strong>${attendanceRate}%</strong></div><div class="stat-row"><span>Attendees in a G12 Class</span><strong>${attendees.filter(a => getMember(a.memberId)?.g12PastorId).length}</strong></div><div class="stat-row"><span>Areas Represented</span><strong>${new Set(attendees.map(a => getMember(a.memberId)?.areaId).filter(Boolean)).size}</strong></div></div></div>
     </div>
+    <div class="card absentees-card-inner"><h3>Absentees After Service</h3><p class="footer-note">Calculated from all registered members by default. Use filters only when you want to narrow follow-up.</p><div class="toolbar compact-toolbar"><div class="field"><label>Area</label><select id="absenceAreaFilter"><option value="">All registered members</option>${state.db.areas.map(area => `<option value="${area.id}" ${state.absenceFilters.areaId === area.id ? 'selected' : ''}>${escapeHtml(area.name)}</option>`).join('')}</select></div><div class="field"><label>G12 Class</label><select id="absenceG12Filter"><option value="">All G12 classes</option>${pastors.map(pastor => `<option value="${pastor.id}" ${state.absenceFilters.g12Id === pastor.id ? 'selected' : ''}>${escapeHtml(pastor.className || pastor.name)}</option>`).join('')}</select></div><div class="field"><label>Level</label><select id="absenceLevelFilter"><option value="">All levels</option><option value="${LEVELS.new}" ${state.absenceFilters.level === LEVELS.new ? 'selected' : ''}>${LEVELS.new}</option><option value="${LEVELS.consistent}" ${state.absenceFilters.level === LEVELS.consistent ? 'selected' : ''}>${LEVELS.consistent}</option><option value="${LEVELS.strong}" ${state.absenceFilters.level === LEVELS.strong ? 'selected' : ''}>${LEVELS.strong}</option></select></div></div><div class="inline-actions section-gap-top"><button class="btn tiny" type="button" data-message-absentees-all="${event.id}">Message All Absentees</button><button class="btn secondary tiny" type="button" data-message-absentees-selected="${event.id}">Message Selected</button></div><div class="table-wrap section-gap-top"><table><thead><tr><th></th><th>Name</th><th>Area</th><th>G12 Class</th><th>Level</th><th>Phone</th></tr></thead><tbody>${absentees.length ? absentees.map(member => { const profile = getMemberProfile(member); return `<tr><td><input type="checkbox" data-absentee-checkbox value="${member.id}" /></td><td><button class="link-btn" type="button" data-open-member="${member.id}">${escapeHtml(member.fullName)}</button></td><td>${escapeHtml(profile.areaName)}</td><td>${escapeHtml(profile.g12Class)}</td><td><span class="badge ${profile.level === LEVELS.strong ? 'success' : profile.level === LEVELS.consistent ? 'warn' : ''}">${escapeHtml(profile.level)}</span></td><td>${escapeHtml(member.phone)}</td></tr>`; }).join('') : `<tr><td colspan="6">No absentees match the current filters.</td></tr>`}</tbody></table></div></div>
   `;
 }
 
@@ -1789,11 +1710,13 @@ function bindAppEvents() {
     qq('[data-new-statutory-field]').forEach(field => field.classList.toggle('hidden', !isNewStatutory));
   });
 
-  q('#attendanceEventSelect')?.addEventListener('change', (e) => {
-    state.selectedAttendanceEventId = e.target.value;
-    q('#attendanceWorkspace').innerHTML = e.target.value ? renderAttendanceWorkspace(e.target.value) : '<div class="empty">Select a service event above to mark or review attendance.</div>' ;
-    bindAttendanceWorkspace();
-  });
+  qq('[data-open-service-event]').forEach(btn => btn.addEventListener('click', () => {
+    state.selectedAttendanceEventId = btn.dataset.openServiceEvent;
+    render();
+  }));
+  q('#serviceHistorySearch')?.addEventListener('input', applyServiceHistoryFilters);
+  q('#serviceHistoryFrom')?.addEventListener('change', applyServiceHistoryFilters);
+  q('#serviceHistoryTo')?.addEventListener('change', applyServiceHistoryFilters);
   if (state.view === 'attendance') bindAttendanceWorkspace();
 
   qq('[data-open-member]').forEach(btn => btn.addEventListener('click', () => {
@@ -2156,6 +2079,57 @@ function bindAttendanceWorkspace() {
   q('#absenceLevelFilter')?.addEventListener('change', handleAbsenceFilterChange);
   q('[data-message-absentees-all]')?.addEventListener('click', () => handleAbsenteeMessaging('all'));
   q('[data-message-absentees-selected]')?.addEventListener('click', () => handleAbsenteeMessaging('selected'));
+  q('#attendanceQuickMemberForm')?.addEventListener('submit', handleAttendanceQuickMemberAdd);
+  q('[data-close-attendance-service]')?.addEventListener('click', handleCloseAttendanceService);
+}
+
+function handleAttendanceQuickMemberAdd(event) {
+  event.preventDefault();
+  const fd = new FormData(event.target);
+  const eventId = String(fd.get('eventId') || state.selectedAttendanceEventId || '');
+  const fullName = String(fd.get('fullName') || '').trim();
+  if (!fullName || !eventId) {
+    showNotice('Enter the person name first.', 'error');
+    render();
+    return;
+  }
+  const member = {
+    id: uid('member'),
+    fullName,
+    phone: String(fd.get('phone') || '').trim(),
+    address: String(fd.get('address') || '').trim(),
+    birthday: '',
+    areaId: String(fd.get('areaId') || ''),
+    g12PastorId: '',
+    createdAt: nowStr(),
+    createdByUserId: state.session.id,
+  };
+  state.db.members.push(member);
+  state.db.attendance.push({ id: uid('att'), memberId: member.id, eventId, markedByUserId: state.session.id, createdAt: nowStr() });
+  saveDb();
+  state.selectedAttendanceEventId = eventId;
+  showNotice('New person added and marked present.');
+  render();
+}
+
+function handleCloseAttendanceService() {
+  state.selectedAttendanceEventId = '';
+  showNotice('Service saved. You can reopen it anytime from Service History.');
+  render();
+}
+
+function applyServiceHistoryFilters() {
+  const search = q('#serviceHistorySearch')?.value.trim().toLowerCase() || '';
+  const from = q('#serviceHistoryFrom')?.value || '';
+  const to = q('#serviceHistoryTo')?.value || '';
+  qq('[data-open-service-event]').forEach(item => {
+    const name = item.dataset.serviceName || '';
+    const date = item.dataset.serviceDate || '';
+    const matchSearch = !search || name.includes(search);
+    const matchFrom = !from || date >= from;
+    const matchTo = !to || date <= to;
+    item.classList.toggle('hidden', !(matchSearch && matchFrom && matchTo));
+  });
 }
 
 function handleAttendanceToggle(event) {

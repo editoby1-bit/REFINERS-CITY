@@ -329,3 +329,62 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   .service-start-grid, .attendance-main-grid { grid-template-columns: 1fr; }
   .mini-select { min-width: 100%; width:100%; }
 }
+
+/* Refined attendance workflow */
+.attendance-flow-card, .service-history-card, .attendance-mark-card { margin-bottom: 18px; }
+.flow-heading, .active-service-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+.flow-heading h3, .active-service-header h3 { margin-bottom: 4px; }
+.service-start-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.service-start-actions { grid-column: 1 / -1; }
+.service-history-filters .field { min-width: 180px; }
+.service-history-list { display: grid; gap: 10px; max-height: 320px; overflow: auto; padding-right: 4px; }
+.service-history-item {
+  width: 100%;
+  border: 1px solid var(--line);
+  background: #fff;
+  border-radius: 16px;
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  text-align: left;
+  color: var(--ink);
+  cursor: pointer;
+}
+.service-history-item strong { display: block; color: var(--primary); font-size: 16px; }
+.service-history-item span { display: block; color: var(--muted); font-size: 13px; margin-top: 4px; }
+.service-history-item b { white-space: nowrap; color: var(--ink); }
+.service-history-item.active { border-color: var(--primary); background: #fff6fa; box-shadow: 0 8px 18px rgba(185, 13, 81, 0.08); }
+.attendance-empty { display: grid; gap: 8px; }
+.attendance-empty strong { color: var(--ink); font-size: 18px; }
+.attendance-work-grid { display: grid; grid-template-columns: minmax(280px, 0.95fr) minmax(320px, 1.35fr); gap: 18px; align-items: start; }
+.attendance-panel {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 16px;
+  background: #fff;
+}
+.summary-panel { position: sticky; top: 12px; }
+.attendance-checklist { max-height: 520px; }
+.quick-add-box {
+  border: 1px solid #efd3de;
+  background: #fffafd;
+  border-radius: 16px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+}
+.quick-add-box summary { cursor: pointer; font-weight: 800; color: var(--primary); }
+.compact-form { margin-top: 12px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.absentees-card-inner { margin-top: 18px; box-shadow: none; }
+@media (max-width: 900px) {
+  .service-start-grid, .attendance-work-grid, .compact-form { grid-template-columns: 1fr; }
+  .summary-panel { position: static; }
+  .flow-heading, .active-service-header { flex-direction: column; }
+}
