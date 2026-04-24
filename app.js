@@ -1176,7 +1176,7 @@ function renderG12Groups() {
 
 function renderAttendance() {
   const user = state.session;
-  const events = state.db.serviceEvents.slice().sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
+  const events = state.db.serviceEvents.slice().sort((a, b) => b.date.localeCompare(a.date) || String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
   const templates = getServiceTemplates();
   const selectedEventId = state.selectedAttendanceEventId || '';
   const selectedEvent = state.db.serviceEvents.find(e => e.id === selectedEventId);
@@ -1216,8 +1216,14 @@ function renderAttendance() {
       ` : `<div class="notice">Attendance marking is read-only for your role. Church Admin alone can create services and tick attendance.</div>`}
     </section>
 
+    <section class="card attendance-mark-card">
+      <div id="attendanceWorkspace">
+        ${selectedEventId ? renderAttendanceWorkspace(selectedEventId) : `<div class="empty attendance-empty"><strong>2. Mark Attendance</strong><span>Start a new service above. The member list, summary, and absentee follow-up will appear here.</span></div>`}
+      </div>
+    </section>
+
     <section class="card service-history-card">
-      <div class="flow-heading"><div><h3>2. Service History</h3><p class="footer-note">Open any saved service by date or name to review attendance and absentees.</p></div></div>
+      <div class="flow-heading"><div><h3>3. Service History</h3><p class="footer-note">Latest services appear first. Open any saved service by date or name to review attendance and absentees.</p></div></div>
       <div class="toolbar compact-toolbar service-history-filters">
         <div class="field"><label>Search Service Name</label><input id="serviceHistorySearch" placeholder="Love Service, Midweek, Easter..." /></div>
         <div class="field"><label>From</label><input type="date" id="serviceHistoryFrom" /></div>
@@ -1229,12 +1235,6 @@ function renderAttendance() {
           const active = selectedEventId === event.id;
           return `<button class="service-history-item ${active ? 'active' : ''}" type="button" data-open-service-event="${event.id}" data-service-name="${escapeHtml(event.name).toLowerCase()}" data-service-date="${event.date}"><div><strong>${escapeHtml(event.name)}</strong><span>${fmtDate(event.date)} • ${escapeHtml(event.category)} • ${escapeHtml(getWeekdayName(event.date))}</span></div><b>${count} present</b></button>`;
         }).join('') : `<div class="empty">No service has been started yet.</div>`}
-      </div>
-    </section>
-
-    <section class="card attendance-mark-card">
-      <div id="attendanceWorkspace">
-        ${selectedEventId ? renderAttendanceWorkspace(selectedEventId) : `<div class="empty attendance-empty"><strong>3. Mark Attendance</strong><span>Start a new service above or open one from Service History. The member list, summary, and absentee follow-up will appear here.</span></div>`}
       </div>
     </section>
   `;
