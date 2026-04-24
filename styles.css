@@ -388,3 +388,44 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   .summary-panel { position: static; }
   .flow-heading, .active-service-header { flex-direction: column; }
 }
+
+/* v17 conference attendance refinements */
+.custom-service-row {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  align-items: start;
+}
+.conference-day-strip {
+  border: 1px solid #efd3de;
+  background: #fffafd;
+  border-radius: 16px;
+  padding: 12px 14px;
+  margin: 0 0 16px;
+  display: grid;
+  gap: 8px;
+}
+.conference-day-strip > div {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.conference-day-strip button.tiny {
+  border: 1px solid #e7c8d4;
+  background: #fff;
+  color: var(--primary);
+  border-radius: 999px;
+  padding: 8px 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.conference-day-strip button.tiny.active {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
+.conference-day-strip small { color: var(--muted); }
+@media (max-width: 900px) {
+  .custom-service-row { grid-template-columns: 1fr; }
+}

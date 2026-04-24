@@ -1201,8 +1201,10 @@ function renderAttendance() {
             </select>
           </div>
           <div class="field"><label>Optional Service Name / Theme</label><input name="customTitle" placeholder="Example: Love Service, Easter Service" /></div>
-          <div class="field hidden" data-custom-service-field><label>Custom Activity / Conference Name</label><input name="customName" placeholder="Example: Youth Conference" /></div>
-          <div class="field hidden" data-custom-service-field><label>End Date For Multi-Day Activity</label><input type="date" name="customEndDate" /><small>Leave empty for one day. If the conference spans many days, each day gets its own attendance record.</small></div>
+          <div class="custom-service-row hidden" data-custom-service-field>
+            <div class="field"><label>Custom Activity / Conference Name</label><input name="customName" placeholder="Example: Youth Conference" /></div>
+            <div class="field"><label>End Date For Multi-Day Activity</label><input type="date" name="customEndDate" /><small>Leave empty for one day. If the conference spans many days, each day gets its own attendance record.</small></div>
+          </div>
           <div class="field hidden" data-new-statutory-field><label>New Statutory Service Name</label><input name="newStatutoryName" placeholder="Example: Friday Prayer Service" /></div>
           <div class="field hidden" data-new-statutory-field><label>Day of Week</label>
             <select name="newStatutoryDay">
@@ -1247,11 +1249,15 @@ function renderAttendanceWorkspace(eventId) {
   const user = state.session;
   const attendees = state.db.attendance.filter(a => a.eventId === eventId);
   const members = state.db.members.slice().sort((a, b) => a.fullName.localeCompare(b.fullName));
+  const conferenceDays = event.conferenceGroupId
+    ? state.db.serviceEvents.filter(item => item.conferenceGroupId === event.conferenceGroupId).sort((a, b) => (a.conferenceDay || 0) - (b.conferenceDay || 0) || a.date.localeCompare(b.date))
+    : [];
   const absentees = getAbsenteesForEvent(eventId);
   const attendanceRate = members.length ? Math.round((attendees.length / members.length) * 100) : 0;
   const pastors = state.db.users.filter(u => u.role === 'g12').slice().sort((a, b) => (a.className || a.name).localeCompare(b.className || b.name));
   return `
-    <div class="active-service-header"><div><h3>${escapeHtml(event.name)}</h3><p class="page-subtitle">${fmtDate(event.date)} • ${escapeHtml(event.category)} • ${escapeHtml(getWeekdayName(event.date))}</p></div><div class="inline-actions"><button class="btn secondary tiny" type="button" data-close-attendance-service>Close & Save Service</button></div></div>
+    <div class="active-service-header"><div><h3>${escapeHtml(event.name)}</h3><p class="page-subtitle">${fmtDate(event.date)} • ${escapeHtml(event.category)} • ${escapeHtml(getWeekdayName(event.date))}${event.closedAt ? ' • Saved' : ''}</p></div><div class="inline-actions"><button class="btn secondary tiny" type="button" data-close-attendance-service>${event.conferenceGroupId ? 'Close & Save This Day' : 'Close & Save Service'}</button></div></div>
+    ${conferenceDays.length ? `<div class="conference-day-strip"><strong>${escapeHtml(event.conferenceName || 'Conference days')}</strong><div>${conferenceDays.map(day => `<button class="tiny ${day.id === event.id ? 'active' : ''}" type="button" data-open-service-event="${day.id}">Day ${day.conferenceDay}: ${fmtDate(day.date)}${day.closedAt ? ' ✓' : ''}</button>`).join('')}</div><small>Each conference day has its own attendance. Save the day you are working on, then open the next day when needed.</small></div>` : ''}
     <div class="attendance-work-grid">
       <div class="attendance-panel"><h3>Mark Present Members</h3>
         <div class="toolbar"><div class="field"><label>Search Member</label><input id="attendanceSearch" placeholder="Search member name" /></div><div class="field"><label>Filter Area</label><select id="attendanceAreaFilter"><option value="">All areas</option>${state.db.areas.map(area => `<option value="${area.id}">${escapeHtml(area.name)}</option>`).join('')}</select></div></div>
@@ -1937,6 +1943,7 @@ function handleCreateService(event) {
         conferenceEndDate: customEndDate,
         createdAt: batchCreatedAt,
         createdByUserId: state.session.id,
+        closedAt: '',
       });
       cursor.setDate(cursor.getDate() + 1);
       dayIndex += 1;
@@ -1951,6 +1958,7 @@ function handleCreateService(event) {
       templateId: template === 'custom' ? '' : template.id,
       createdAt: nowStr(),
       createdByUserId: state.session.id,
+      closedAt: '',
     });
   }
 
@@ -2112,6 +2120,10 @@ function handleRemoveMemberFromG12(memberId, pastorId) {
 }
 
 function bindAttendanceWorkspace() {
+  qq('[data-open-service-event]').forEach(btn => btn.addEventListener('click', () => {
+    state.selectedAttendanceEventId = btn.dataset.openServiceEvent;
+    render();
+  }));
   qq('[data-attendance-member]').forEach(box => box.addEventListener('change', handleAttendanceToggle));
   q('#attendanceSearch')?.addEventListener('input', applyAttendanceFilters);
   q('#attendanceAreaFilter')?.addEventListener('change', applyAttendanceFilters);
@@ -2154,8 +2166,11 @@ function handleAttendanceQuickMemberAdd(event) {
 }
 
 function handleCloseAttendanceService() {
+  const event = state.db.serviceEvents.find(item => item.id === state.selectedAttendanceEventId);
+  if (event) event.closedAt = nowStr();
   state.selectedAttendanceEventId = '';
-  showNotice('Service saved. You can reopen it anytime from Service History.');
+  saveDb();
+  showNotice(event?.conferenceGroupId ? 'This conference day has been saved. Open the next day when needed.' : 'Service saved. You can reopen it anytime from Service History.');
   render();
 }
 
