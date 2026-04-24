@@ -1176,7 +1176,7 @@ function renderG12Groups() {
 
 function renderAttendance() {
   const user = state.session;
-  const events = state.db.serviceEvents.slice().sort((a, b) => b.date.localeCompare(a.date) || String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+  const events = state.db.serviceEvents.slice().sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')) || b.date.localeCompare(a.date));
   const templates = getServiceTemplates();
   const selectedEventId = state.selectedAttendanceEventId || '';
   const selectedEvent = state.db.serviceEvents.find(e => e.id === selectedEventId);
@@ -1201,7 +1201,8 @@ function renderAttendance() {
             </select>
           </div>
           <div class="field"><label>Optional Service Name / Theme</label><input name="customTitle" placeholder="Example: Love Service, Easter Service" /></div>
-          <div class="field hidden" data-custom-service-field><label>Custom Activity Name</label><input name="customName" placeholder="Example: Youth Conference" /></div>
+          <div class="field hidden" data-custom-service-field><label>Custom Activity / Conference Name</label><input name="customName" placeholder="Example: Youth Conference" /></div>
+          <div class="field hidden" data-custom-service-field><label>End Date For Multi-Day Activity</label><input type="date" name="customEndDate" /><small>Leave empty for one day. If the conference spans many days, each day gets its own attendance record.</small></div>
           <div class="field hidden" data-new-statutory-field><label>New Statutory Service Name</label><input name="newStatutoryName" placeholder="Example: Friday Prayer Service" /></div>
           <div class="field hidden" data-new-statutory-field><label>Day of Week</label>
             <select name="newStatutoryDay">
@@ -1706,7 +1707,7 @@ function bindAppEvents() {
   q('#serviceTemplateSelect')?.addEventListener('change', (e) => {
     const isCustom = e.target.value === 'custom';
     const isNewStatutory = e.target.value === 'add_statutory';
-    q('[data-custom-service-field]')?.classList.toggle('hidden', !isCustom);
+    qq('[data-custom-service-field]').forEach(field => field.classList.toggle('hidden', !isCustom));
     qq('[data-new-statutory-field]').forEach(field => field.classList.toggle('hidden', !isNewStatutory));
   });
 
@@ -1876,6 +1877,7 @@ function handleCreateService(event) {
   const customTitle = String(fd.get('customTitle') || '').trim();
   const customName = String(fd.get('customName') || '').trim();
   const date = String(fd.get('date') || '');
+  const customEndDate = String(fd.get('customEndDate') || '').trim();
   if (!date) {
     showNotice('Choose a calendar date for this service.', 'error');
     render();
@@ -1906,21 +1908,60 @@ function handleCreateService(event) {
     render();
     return;
   }
-  const eventObj = {
-    id: uid('event'),
-    name,
-    category: template === 'custom' ? 'Custom' : (template?.category || 'Statutory'),
-    date,
-    custom: template === 'custom',
-    templateId: template === 'custom' ? '' : template.id,
-    createdAt: nowStr(),
-    createdByUserId: state.session.id,
-  };
-  state.db.serviceEvents.push(eventObj);
-  state.selectedAttendanceEventId = eventObj.id;
+
+  let createdEvents = [];
+  if (templateId === 'custom' && customEndDate && customEndDate !== date) {
+    if (customEndDate < date) {
+      showNotice('The conference end date cannot be before the start date.', 'error');
+      render();
+      return;
+    }
+    const groupId = uid('conf');
+    const cursor = new Date(date + 'T00:00:00');
+    const endDate = new Date(customEndDate + 'T00:00:00');
+    const batchCreatedAt = nowStr();
+    let dayIndex = 1;
+    while (cursor <= endDate) {
+      const dayDate = isoDate(cursor);
+      createdEvents.push({
+        id: uid('event'),
+        name: name + ' — Day ' + dayIndex,
+        category: 'Custom',
+        date: dayDate,
+        custom: true,
+        templateId: '',
+        conferenceGroupId: groupId,
+        conferenceName: name,
+        conferenceDay: dayIndex,
+        conferenceStartDate: date,
+        conferenceEndDate: customEndDate,
+        createdAt: batchCreatedAt,
+        createdByUserId: state.session.id,
+      });
+      cursor.setDate(cursor.getDate() + 1);
+      dayIndex += 1;
+    }
+  } else {
+    createdEvents.push({
+      id: uid('event'),
+      name,
+      category: template === 'custom' ? 'Custom' : (template?.category || 'Statutory'),
+      date,
+      custom: template === 'custom',
+      templateId: template === 'custom' ? '' : template.id,
+      createdAt: nowStr(),
+      createdByUserId: state.session.id,
+    });
+  }
+
+  state.db.serviceEvents.push(...createdEvents);
+  state.selectedAttendanceEventId = createdEvents[0]?.id || '';
   saveDb();
   event.target.reset();
-  showNotice(templateId === 'add_statutory' ? 'Statutory service day added and event created.' : 'Service event created. Select it from the list to mark attendance.');
+  const notice = createdEvents.length > 1
+    ? createdEvents.length + ' conference days created. Open each day to mark its own attendance.'
+    : (templateId === 'add_statutory' ? 'Statutory service day added and event created.' : 'Service event created. Mark attendance below.');
+  showNotice(notice);
   render();
 }
 
