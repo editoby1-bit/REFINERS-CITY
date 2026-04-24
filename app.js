@@ -1794,7 +1794,7 @@ function bindAppEvents() {
     q('#attendanceWorkspace').innerHTML = e.target.value ? renderAttendanceWorkspace(e.target.value) : '<div class="empty">Select a service event above to mark or review attendance.</div>' ;
     bindAttendanceWorkspace();
   });
-  if (state.selectedAttendanceEventId) bindAttendanceWorkspace();
+  if (state.view === 'attendance') bindAttendanceWorkspace();
 
   qq('[data-open-member]').forEach(btn => btn.addEventListener('click', () => {
     state.modalMemberId = btn.dataset.openMember;

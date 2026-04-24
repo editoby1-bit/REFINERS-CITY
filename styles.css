@@ -314,3 +314,18 @@ tr:last-child td { border-bottom: none; }
 .stack-gap { display: grid; gap: 18px; }
 .compact-toolbar .field { min-width: 140px; }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.section-title-row { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; flex-wrap:wrap; }
+.service-start-grid { grid-template-columns: repeat(3, minmax(180px, 1fr)); align-items:end; }
+.service-start-grid .align-end { align-self:end; }
+.mini-select { min-width: 320px; margin:0; }
+.service-active-panel { display:grid; gap:18px; }
+.service-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; flex-wrap:wrap; }
+.attendance-main-grid { grid-template-columns: minmax(320px, 1.1fr) minmax(280px, .9fr); }
+.soft-card { background: rgba(255,255,255,0.78); box-shadow: none; }
+.single-col-tight { grid-template-columns: 1fr; gap:12px; }
+.single-col-tight .btn { width: fit-content; }
+@media (max-width: 900px) {
+  .service-start-grid, .attendance-main-grid { grid-template-columns: 1fr; }
+  .mini-select { min-width: 100%; width:100%; }
+}
