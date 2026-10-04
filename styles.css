@@ -429,3 +429,8 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 @media (max-width: 900px) {
   .custom-service-row { grid-template-columns: 1fr; }
 }
+
+/* WhatsApp send queue */
+.send-queue-list { max-height: 50vh; }
+.send-queue-list .check-row.sent { opacity: 0.6; }
+a.btn, label.btn { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; cursor: pointer; }

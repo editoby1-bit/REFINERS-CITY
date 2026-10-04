@@ -5,8 +5,11 @@ const qq = (s, el = document) => Array.from(el.querySelectorAll(s));
 const app = q('#app');
 
 const uid = (prefix) => `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
-const todayStr = () => new Date().toISOString().slice(0, 10);
-const isoDate = (date) => date.toISOString().slice(0, 10);
+// Local calendar dates. toISOString() is UTC and shifts days for churches east of GMT (e.g. Lagos, UTC+1).
+const isoDate = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+const todayStr = () => isoDate(new Date());
+// Date-only strings ("2026-12-25") parse as UTC midnight; read them as local dates instead.
+const parseDateValue = (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value)) ? new Date(`${value}T00:00:00`) : new Date(value);
 const nextWeekdayDate = (weekdayIndex) => {
   const date = new Date();
   date.setHours(0, 0, 0, 0);
@@ -15,7 +18,7 @@ const nextWeekdayDate = (weekdayIndex) => {
   return isoDate(date);
 };
 const nowStr = () => new Date().toISOString();
-const fmtDate = (value) => value ? new Date(value).toLocaleDateString() : '—';
+const fmtDate = (value) => value ? parseDateValue(value).toLocaleDateString() : '—';
 const fmtDateTime = (value) => value ? new Date(value).toLocaleString() : '—';
 const escapeHtml = (text = '') => String(text)
   .replaceAll('&', '&amp;')
@@ -78,9 +81,11 @@ function defaultExistingServiceEvents(adminId = '') {
 
 function ensureDefaultExistingServices(db) {
   db.serviceEvents ||= [];
+  db.dismissedDefaultServices ||= [];
   const adminId = db.users?.find(user => user.role === 'admin')?.id || '';
   defaultExistingServiceEvents(adminId).forEach(eventObj => {
-    if (!db.serviceEvents.some(item => item.templateId === eventObj.templateId && item.date === eventObj.date)) {
+    const dismissed = db.dismissedDefaultServices.includes(`${eventObj.templateId}_${eventObj.date}`);
+    if (!dismissed && !db.serviceEvents.some(item => item.templateId === eventObj.templateId && item.date === eventObj.date)) {
       db.serviceEvents.push(eventObj);
     }
   });
@@ -111,6 +116,8 @@ const state = {
   removingAreaId: null,
   editingG12Id: null,
   dialog: null,
+  sendQueue: null,
+  editingProspectId: null,
   selectedAttendanceEventId: '',
   absenceFilters: { areaId: '', g12Id: '', level: '' },
 };
@@ -310,7 +317,7 @@ function buildServiceEventName(template, customTitle, customName) {
 
 function getFilteredMembersForView({ members, search = '', areaId = '', g12Id = '', level = '', from = '', to = '', memberTab = state.memberTab, growthFocus = state.growthFocus }) {
   return members.filter(member => {
-    const dateOnly = (member.createdAt || '').slice(0, 10);
+    const dateOnly = member.createdAt ? isoDate(new Date(member.createdAt)) : '';
     const memberLevel = getMemberLevel(member.id);
     const tabMatch = memberTab === 'members'
       || (memberTab === 'new' && memberLevel === LEVELS.new)
@@ -511,18 +518,91 @@ function getMessageTargets({ audienceType, audienceId, selectedIds }) {
   return getAudience({ audienceType, audienceId, selectedIds });
 }
 
-function openWhatsappForTargets(targets, message) {
+function openWhatsappForTargets(targets, message, label = 'WhatsApp messages') {
   const valid = targets.filter(t => phoneDigits(t.phone));
   if (!valid.length) {
     showNotice('No valid phone numbers found for this audience.', 'error');
     render();
     return;
   }
-  valid.forEach((target, index) => {
-    setTimeout(() => {
-      window.open(whatsappUrl(target.phone, personaliseMessage(message, target)), '_blank');
-    }, index * 250);
+  const skipped = targets.length - valid.length;
+  // Browsers block every pop-up after the first, so one chat opens directly and
+  // anything larger goes into a send queue the user clicks through.
+  if (valid.length === 1 && !state.sendQueue) {
+    window.open(whatsappUrl(valid[0].phone, personaliseMessage(message, valid[0])), '_blank');
+    if (skipped) showNotice(`${skipped} person(s) skipped because they have no phone number.`, 'error');
+    return;
+  }
+  const items = valid.map(target => ({
+    key: uid('send'),
+    name: target.fullName || target.name || 'Member',
+    phone: target.phone,
+    url: whatsappUrl(target.phone, personaliseMessage(message, target)),
+    opened: false,
+  }));
+  if (state.sendQueue) {
+    state.sendQueue.items.push(...items);
+    state.sendQueue.skipped += skipped;
+    state.sendQueue.label = 'WhatsApp messages';
+  } else {
+    state.sendQueue = { label, items, skipped };
+  }
+  render();
+}
+
+function renderSendQueueModal() {
+  const queue = state.sendQueue;
+  if (!queue) return '';
+  const openedCount = queue.items.filter(item => item.opened).length;
+  const next = queue.items.find(item => !item.opened);
+  return `
+    <div class="modal-header">
+      <div>
+        <h3>${escapeHtml(queue.label)}</h3>
+        <p class="page-subtitle"><span data-send-progress>${openedCount}</span> of ${queue.items.length} opened${queue.skipped ? ` • ${queue.skipped} skipped (no phone number)` : ''}</p>
+      </div>
+      <button class="btn tiny secondary" type="button" data-close-send-queue>Done</button>
+    </div>
+    <div class="modal-body">
+      <div class="notice">Browsers only allow one WhatsApp window at a time, so tap each person to open their chat with the message ready. Press send in WhatsApp, then come back for the next one.</div>
+      <div class="inline-actions section-gap-top">
+        ${next ? `<a class="btn" href="${next.url}" target="_blank" rel="noopener" data-send-item="${next.key}">Open next: ${escapeHtml(next.name)}</a>` : `<span class="badge success">All chats opened</span>`}
+      </div>
+      <div class="checklist section-gap-top send-queue-list">
+        ${queue.items.map(item => `
+          <div class="check-row ${item.opened ? 'sent' : ''}" data-send-row="${item.key}">
+            <div><strong>${escapeHtml(item.name)}</strong><div class="member-meta">${escapeHtml(item.phone)}</div></div>
+            <a class="btn tiny ${item.opened ? 'secondary' : ''}" href="${item.url}" target="_blank" rel="noopener" data-send-item="${item.key}">${item.opened ? 'Opened ✓' : 'Open chat'}</a>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function bindSendQueue() {
+  q('[data-close-send-queue]')?.addEventListener('click', () => {
+    state.sendQueue = null;
+    render();
   });
+  q('#sendQueueModal')?.addEventListener('click', (e) => {
+    if (e.target.id === 'sendQueueModal') {
+      state.sendQueue = null;
+      render();
+    }
+  });
+  qq('[data-send-item]').forEach(link => link.addEventListener('click', () => {
+    const item = state.sendQueue?.items.find(entry => entry.key === link.dataset.sendItem);
+    if (item) item.opened = true;
+    // Re-render after the browser has followed the link.
+    setTimeout(() => {
+      const modal = q('#sendQueueModal .modal');
+      if (modal && state.sendQueue) {
+        modal.innerHTML = renderSendQueueModal();
+        bindSendQueue();
+      }
+    }, 0);
+  }));
 }
 
 function personaliseMessage(message, target) {
@@ -538,6 +618,17 @@ function render() {
   }
 }
 
+const DEMO_ACCOUNTS = [
+  { label: 'Admin', email: 'admin@refiners.local', password: 'admin123' },
+  { label: 'Ordained', email: 'ordained@refiners.local', password: 'pastor123' },
+  { label: 'G12', email: 'g12@refiners.local', password: 'g12pass' },
+  { label: 'Bishop', email: 'bishop@refiners.local', password: 'bishop123' },
+];
+
+function getDemoAccountsInUse() {
+  return DEMO_ACCOUNTS.filter(acc => state.db.users.some(u => u.email.toLowerCase() === acc.email && u.password === acc.password));
+}
+
 function renderAuth() {
   app.innerHTML = `
     <div class="auth-wrap">
@@ -546,13 +637,13 @@ function renderAuth() {
           <img src="assets/logo.jpg" alt="Refiners City logo" />
           <h2>Refiners City International Church</h2>
           <p>Attendance, membership growth, area structure, G12 tracking, follow-up lists, birthdays, and WhatsApp outreach in one place.</p>
-          <div class="notice success-box">
-            <strong>Demo login details</strong><br />
-            Admin: admin@refiners.local / admin123<br />
-            Ordained: ordained@refiners.local / pastor123<br />
-            G12: g12@refiners.local / g12pass<br />
-            Bishop: bishop@refiners.local / bishop123
-          </div>
+          ${getDemoAccountsInUse().length ? `
+            <div class="notice success-box">
+              <strong>Demo login details</strong><br />
+              ${getDemoAccountsInUse().map(acc => `${escapeHtml(acc.label)}: ${escapeHtml(acc.email)} / ${escapeHtml(acc.password)}`).join('<br />')}
+              <br /><small>Change these passwords in Settings before using the app for real church records.</small>
+            </div>
+          ` : ''}
         </div>
         <div class="auth-form">
           <h1 class="auth-title">Welcome back</h1>
@@ -590,7 +681,7 @@ function renderAuth() {
               </div>
               <div class="field">
                 <label>Password</label>
-                <input type="password" name="password" required />
+                <input type="password" name="password" minlength="6" required />
               </div>
               <div class="field">
                 <label>Role</label>
@@ -732,6 +823,7 @@ function renderApp() {
           ${navButton('prospects', 'Non Members')}
           ${navButton('birthdays', 'Birthdays Today')}
           ${navButton('automation', 'Automation Rules')}
+          ${navButton('settings', user.role === 'admin' ? 'Settings & Backup' : 'My Account')}
         </div>
 
         <div class="sidebar-footer">
@@ -764,6 +856,14 @@ function renderApp() {
 
     <div id="areaEditorModal" class="modal-backdrop ${(state.editingAreaId || state.removingAreaId) ? 'show' : ''}">
       <div class="modal">${renderAreaEditorModal()}</div>
+    </div>
+
+    <div id="prospectEditorModal" class="modal-backdrop ${state.editingProspectId ? 'show' : ''}">
+      <div class="modal">${renderProspectEditorModal()}</div>
+    </div>
+
+    <div id="sendQueueModal" class="modal-backdrop ${state.sendQueue ? 'show' : ''}">
+      <div class="modal">${renderSendQueueModal()}</div>
     </div>
 
     <div id="appDialogModal" class="modal-backdrop ${state.dialog ? 'show' : ''}">
@@ -809,6 +909,7 @@ function getViewTitle() {
     prospects: 'Non Members',
     birthdays: 'Birthdays Today',
     automation: 'Automation Rules',
+    settings: state.session?.role === 'admin' ? 'Settings & Backup' : 'My Account',
   };
   return map[state.view] || 'Dashboard';
 }
@@ -817,6 +918,9 @@ function getViewSubtitle(user) {
   if (state.view === 'attendance' && user.role !== 'admin') return 'Church Admin alone can mark attendance. Other roles can only review results.';
   if (state.view === 'areas') return 'Create church areas, assign bishops, and connect members to their administrative base.';
   if (state.view === 'g12') return "Review G12 groups, track members under each class, and zoom into a pastor's group.";
+  if (state.view === 'settings') return user.role === 'admin'
+    ? 'Protect church records with regular backups, export spreadsheets, and manage login accounts.'
+    : 'Update your login password.';
   if (state.view === 'messages') return 'Prepare manual, scheduled, holiday, and birthday WhatsApp messages for one person or many groups.';
   return 'Manage membership growth, follow-up, services, and communication from one responsive app.';
 }
@@ -832,6 +936,7 @@ function renderView() {
     case 'prospects': return renderProspects();
     case 'birthdays': return renderBirthdays();
     case 'automation': return renderAutomation();
+    case 'settings': return renderSettings();
     default: return renderDashboard();
   }
 }
@@ -1256,7 +1361,7 @@ function renderAttendanceWorkspace(eventId) {
   const attendanceRate = members.length ? Math.round((attendees.length / members.length) * 100) : 0;
   const pastors = state.db.users.filter(u => u.role === 'g12').slice().sort((a, b) => (a.className || a.name).localeCompare(b.className || b.name));
   return `
-    <div class="active-service-header"><div><h3>${escapeHtml(event.name)}</h3><p class="page-subtitle">${fmtDate(event.date)} • ${escapeHtml(event.category)} • ${escapeHtml(getWeekdayName(event.date))}${event.closedAt ? ' • Saved' : ''}</p></div><div class="inline-actions"><button class="btn secondary tiny" type="button" data-close-attendance-service>${event.conferenceGroupId ? 'Close & Save This Day' : 'Close & Save Service'}</button></div></div>
+    <div class="active-service-header"><div><h3>${escapeHtml(event.name)}</h3><p class="page-subtitle">${fmtDate(event.date)} • ${escapeHtml(event.category)} • ${escapeHtml(getWeekdayName(event.date))}${event.closedAt ? ' • Saved' : ''}</p></div><div class="inline-actions"><button class="btn secondary tiny" type="button" data-close-attendance-service>${event.conferenceGroupId ? 'Close & Save This Day' : 'Close & Save Service'}</button>${user.role === 'admin' ? `<button class="btn danger tiny" type="button" data-delete-service="${event.id}">Delete Service</button>` : ''}</div></div>
     ${conferenceDays.length ? `<div class="conference-day-strip"><strong>${escapeHtml(event.conferenceName || 'Conference days')}</strong><div>${conferenceDays.map(day => `<button class="tiny ${day.id === event.id ? 'active' : ''}" type="button" data-open-service-event="${day.id}">Day ${day.conferenceDay}: ${fmtDate(day.date)}${day.closedAt ? ' ✓' : ''}</button>`).join('')}</div><small>Each conference day has its own attendance. Save the day you are working on, then open the next day when needed.</small></div>` : ''}
     <div class="attendance-work-grid">
       <div class="attendance-panel"><h3>Mark Present Members</h3>
@@ -1371,7 +1476,7 @@ function renderProspects() {
     <section class="card">
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Name</th><th>Area</th><th>Phone</th><th>Birthday</th><th>Added</th><th>Message</th></tr></thead>
+          <thead><tr><th>Name</th><th>Area</th><th>Phone</th><th>Birthday</th><th>Added</th><th>Actions</th></tr></thead>
           <tbody>
             ${prospects.length ? prospects.map(p => `
               <tr>
@@ -1380,7 +1485,14 @@ function renderProspects() {
                 <td>${escapeHtml(p.phone || '—')}</td>
                 <td>${fmtDate(p.birthday)}</td>
                 <td>${fmtDate(p.createdAt)}</td>
-                <td><button class="btn tiny" data-message-single-prospect="${p.id}">Message</button></td>
+                <td><div class="inline-actions">
+                  <button class="btn tiny" data-message-single-prospect="${p.id}">Message</button>
+                  ${canManageProspect(user, p) ? `
+                    <button class="btn tiny success" type="button" data-convert-prospect="${p.id}">Convert to Member</button>
+                    <button class="btn tiny secondary" type="button" data-edit-prospect="${p.id}">Edit</button>
+                    ${user.role === 'admin' ? `<button class="btn tiny danger" type="button" data-delete-prospect="${p.id}">Delete</button>` : ''}
+                  ` : ''}
+                </div></td>
               </tr>
             `).join('') : `<tr><td colspan="6">No non members yet.</td></tr>`}
           </tbody>
@@ -1447,7 +1559,7 @@ function renderAutomation() {
                 <td>${escapeHtml(rule.audienceType.replaceAll('_',' '))}</td>
                 <td>${rule.type === 'holiday' && rule.title.toLowerCase().includes('easter') ? 'Easter (auto-computed)' : escapeHtml(rule.scheduleDate || 'Birthday / Dynamic')}</td>
                 <td>${rule.yearly ? 'Yes' : 'No'}</td>
-                <td><button class="btn tiny" data-run-rule="${rule.id}">Run</button></td>
+                <td><div class="inline-actions"><button class="btn tiny" data-run-rule="${rule.id}">Run</button>${state.session.role === 'admin' ? `<button class="btn tiny danger" type="button" data-delete-rule="${rule.id}">Delete</button>` : ''}</div></td>
               </tr>
             `).join('') : `<tr><td colspan="6">No automation rules saved yet.</td></tr>`}
           </tbody>
@@ -1471,6 +1583,72 @@ function renderAutomation() {
   `;
 }
 
+function renderSettings() {
+  const user = state.session;
+  const isAdmin = user.role === 'admin';
+  const users = state.db.users.slice().sort((a, b) => a.role.localeCompare(b.role) || a.name.localeCompare(b.name));
+  const lastBackup = state.db.lastBackupAt;
+  return `
+    <section class="two-col top-align">
+      <div class="card">
+        <h3>Change My Password</h3>
+        <form id="changePasswordForm" class="form-grid single">
+          <div class="field"><label>Current Password</label><input type="password" name="currentPassword" required /></div>
+          <div class="field"><label>New Password</label><input type="password" name="newPassword" minlength="6" required /></div>
+          <div class="field"><label>Confirm New Password</label><input type="password" name="confirmPassword" minlength="6" required /></div>
+          <button class="btn" type="submit">Update Password</button>
+        </form>
+      </div>
+      ${isAdmin ? `
+        <div class="card">
+          <h3>Backup & Restore</h3>
+          <div class="notice ${lastBackup ? '' : 'danger-box'}">All records are saved in this browser only. ${lastBackup ? `Last backup: <strong>${fmtDateTime(lastBackup)}</strong>.` : '<strong>No backup has been downloaded yet.</strong>'} Download a backup regularly (for example after every Sunday) and keep it somewhere safe, such as Google Drive. A backup is also how you move the app to another phone or computer.</div>
+          <div class="inline-actions section-gap-top">
+            <button class="btn" type="button" data-download-backup>Download Full Backup</button>
+            <label class="btn secondary" for="restoreBackupInput">Restore From Backup</label>
+            <input type="file" id="restoreBackupInput" accept="application/json,.json" class="hidden" />
+          </div>
+          <h3 style="margin-top:22px;">Export Spreadsheets (CSV)</h3>
+          <div class="inline-actions">
+            <button class="btn tiny secondary" type="button" data-export-csv="members">Members</button>
+            <button class="btn tiny secondary" type="button" data-export-csv="attendance">Attendance Records</button>
+            <button class="btn tiny secondary" type="button" data-export-csv="services">Service Summary</button>
+            <button class="btn tiny secondary" type="button" data-export-csv="prospects">Non Members</button>
+          </div>
+          <p class="footer-note">CSV files open in Excel, Google Sheets, and Numbers.</p>
+        </div>
+      ` : ''}
+    </section>
+    ${isAdmin ? `
+      <section class="card">
+        <h3>User Accounts</h3>
+        <form id="resetPasswordForm" class="toolbar compact-toolbar">
+          <div class="field"><label>Account</label><select name="userId" required>${users.map(u => `<option value="${u.id}">${escapeHtml(u.name)} (${escapeHtml(ROLE_LABELS[u.role] || u.role)})</option>`).join('')}</select></div>
+          <div class="field"><label>New Password</label><input type="text" name="newPassword" minlength="6" required /></div>
+          <div class="field" style="align-self:end;"><button class="btn tiny" type="submit">Reset Password</button></div>
+        </form>
+        <div class="table-wrap section-gap-top">
+          <table>
+            <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Details</th><th>Created</th><th>Action</th></tr></thead>
+            <tbody>
+              ${users.map(u => `
+                <tr>
+                  <td>${escapeHtml(u.name)}</td>
+                  <td>${escapeHtml(u.email)}</td>
+                  <td>${escapeHtml(ROLE_LABELS[u.role] || u.role)}</td>
+                  <td>${u.role === 'g12' ? escapeHtml(u.className || '—') : u.role === 'bishop' ? escapeHtml(getArea(u.areaId)?.name || 'No area') : '—'}</td>
+                  <td>${fmtDate(u.createdAt)}</td>
+                  <td>${u.id === user.id ? '<span class="badge neutral">You</span>' : `<button class="btn tiny danger" type="button" data-remove-user="${u.id}">Remove</button>`}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    ` : ''}
+  `;
+}
+
 function renderMemberModal() {
   const member = getMember(state.modalMemberId);
   if (!member) return '';
@@ -1480,6 +1658,7 @@ function renderMemberModal() {
   const assignedPastor = getUser(member.g12PastorId);
   const canAdminManage = user.role === 'admin';
   const canSelfManage = user.role === 'g12' && (!member.g12PastorId || member.g12PastorId === user.id);
+  const canEditDetails = canEditMember(user, member);
 
   return `
     <div class="modal-header">
@@ -1534,6 +1713,27 @@ function renderMemberModal() {
           <div class="notice">${assignedPastor ? `This member already belongs to <strong>${escapeHtml(assignedPastor.className || assignedPastor.name)}</strong>.` : 'Only Church Admin or the owner of a G12 class can edit the G12 assignment here.'}</div>
         `}
       </section>
+      ${canEditDetails ? `
+        <section class="card" style="margin-top:16px;">
+          <h3 style="margin-bottom:12px;">Edit Member Details</h3>
+          <form id="memberEditForm" class="form-grid">
+            <input type="hidden" name="memberId" value="${member.id}" />
+            <div class="field"><label>Full Name</label><input name="fullName" value="${escapeHtml(member.fullName)}" required /></div>
+            <div class="field"><label>Phone Number</label><input name="phone" value="${escapeHtml(member.phone || '')}" /></div>
+            <div class="field" style="grid-column:1/-1;"><label>Address</label><input name="address" value="${escapeHtml(member.address || '')}" /></div>
+            <div class="field"><label>Birthday</label><input type="date" name="birthday" value="${escapeHtml(member.birthday || '')}" /></div>
+            ${user.role === 'admin' ? `
+              <div class="field"><label>Area</label><select name="areaId"><option value="">No area yet</option>${state.db.areas.map(a => `<option value="${a.id}" ${member.areaId === a.id ? 'selected' : ''}>${escapeHtml(a.name)}</option>`).join('')}</select></div>
+            ` : `
+              <div class="field"><label>Area</label><input value="${escapeHtml(profile.areaName)}" disabled /></div>
+            `}
+            <div class="inline-actions" style="grid-column:1/-1;">
+              <button class="btn" type="submit">Save Details</button>
+              ${user.role === 'admin' ? `<button class="btn danger" type="button" data-delete-member="${member.id}">Delete Member</button>` : ''}
+            </div>
+          </form>
+        </section>
+      ` : ''}
     </div>
   `;
 }
@@ -1584,6 +1784,36 @@ function renderAreaEditorModal() {
   `;
 }
 
+function renderProspectEditorModal() {
+  const person = state.db.prospects.find(p => p.id === state.editingProspectId);
+  if (!person) return '';
+  const user = state.session;
+  return `
+    <div class="modal-header">
+      <div>
+        <h3>Edit Non Member</h3>
+        <p class="page-subtitle">${escapeHtml(person.fullName)}</p>
+      </div>
+      <button class="btn tiny secondary" type="button" data-close-prospect-modal>Close</button>
+    </div>
+    <div class="modal-body">
+      <form id="prospectEditForm" class="form-grid">
+        <input type="hidden" name="prospectId" value="${person.id}" />
+        <div class="field"><label>Full Name</label><input name="fullName" value="${escapeHtml(person.fullName)}" required /></div>
+        <div class="field"><label>Phone Number</label><input name="phone" value="${escapeHtml(person.phone || '')}" /></div>
+        <div class="field" style="grid-column:1/-1;"><label>Address</label><input name="address" value="${escapeHtml(person.address || '')}" /></div>
+        <div class="field"><label>Birthday</label><input type="date" name="birthday" value="${escapeHtml(person.birthday || '')}" /></div>
+        ${user.role === 'admin' ? `
+          <div class="field"><label>Area</label><select name="areaId"><option value="">No area</option>${state.db.areas.map(a => `<option value="${a.id}" ${person.areaId === a.id ? 'selected' : ''}>${escapeHtml(a.name)}</option>`).join('')}</select></div>
+        ` : `
+          <div class="field"><label>Area</label><input value="${escapeHtml(getArea(person.areaId)?.name || 'No area')}" disabled /></div>
+        `}
+        <div class="inline-actions" style="grid-column:1/-1;"><button class="btn" type="submit">Save Changes</button></div>
+      </form>
+    </div>
+  `;
+}
+
 function syncFlashNotice() {
   if (!state.notice || state.notice.type !== 'success') return;
   const noticeId = state.notice.id;
@@ -1598,6 +1828,7 @@ function syncFlashNotice() {
 
 function bindAppEvents() {
   syncFlashNotice();
+  bindSendQueue();
 
   qq('[data-nav]').forEach(btn => btn.addEventListener('click', () => {
     state.view = btn.dataset.nav;
@@ -1732,6 +1963,25 @@ function bindAppEvents() {
   }));
 
   q('#memberG12Form')?.addEventListener('submit', handleMemberModalG12Save);
+  q('#memberEditForm')?.addEventListener('submit', handleMemberEditSave);
+  q('#prospectEditForm')?.addEventListener('submit', handleProspectEditSave);
+  qq('[data-edit-prospect]').forEach(btn => btn.addEventListener('click', () => {
+    state.editingProspectId = btn.dataset.editProspect;
+    render();
+  }));
+  qq('[data-close-prospect-modal]').forEach(btn => btn.addEventListener('click', () => {
+    state.editingProspectId = null;
+    render();
+  }));
+  q('#prospectEditorModal')?.addEventListener('click', (e) => {
+    if (e.target.id === 'prospectEditorModal') {
+      state.editingProspectId = null;
+      render();
+    }
+  });
+  qq('[data-convert-prospect]').forEach(btn => btn.addEventListener('click', () => handleConvertProspect(btn.dataset.convertProspect)));
+  qq('[data-delete-prospect]').forEach(btn => btn.addEventListener('click', () => handleDeleteProspect(btn.dataset.deleteProspect)));
+  q('[data-delete-member]')?.addEventListener('click', (e) => handleDeleteMember(e.target.dataset.deleteMember));
   q('#g12ClassSettingsForm')?.addEventListener('submit', handleG12ClassSettingsSave);
   qq('[data-open-g12-members]').forEach(btn => btn.addEventListener('click', () => {
     const clickedId = btn.dataset.openG12Members;
@@ -1789,11 +2039,18 @@ function bindAppEvents() {
   }));
 
   qq('[data-run-rule]').forEach(btn => btn.addEventListener('click', () => runRuleNow(btn.dataset.runRule)));
+  qq('[data-delete-rule]').forEach(btn => btn.addEventListener('click', () => handleDeleteRule(btn.dataset.deleteRule)));
   qq('[data-quick-birthday]').forEach(btn => btn.addEventListener('click', () => {
     const targets = getBirthdaysToday(btn.dataset.quickBirthday);
     const message = 'Happy Birthday {name}. Refiners City International Church celebrates you today.';
     openWhatsappForTargets(targets, message);
   }));
+  q('#changePasswordForm')?.addEventListener('submit', handleChangePassword);
+  q('#resetPasswordForm')?.addEventListener('submit', handleResetPassword);
+  qq('[data-remove-user]').forEach(btn => btn.addEventListener('click', () => handleRemoveUser(btn.dataset.removeUser)));
+  q('[data-download-backup]')?.addEventListener('click', handleDownloadBackup);
+  q('#restoreBackupInput')?.addEventListener('change', handleRestoreBackup);
+  qq('[data-export-csv]').forEach(btn => btn.addEventListener('click', () => handleExportCsv(btn.dataset.exportCsv)));
   qq('[data-add-holiday]').forEach(btn => btn.addEventListener('click', () => addHolidayRule(btn.dataset.addHoliday)));
 }
 
@@ -1817,6 +2074,224 @@ function handleAddMember(event) {
   event.target.reset();
   showNotice('Member added successfully.');
   render();
+}
+
+function canEditMember(user, member) {
+  if (!user || !member) return false;
+  if (user.role === 'admin') return true;
+  return user.role === 'bishop' && !!user.areaId && member.areaId === user.areaId;
+}
+
+function handleMemberEditSave(event) {
+  event.preventDefault();
+  const fd = new FormData(event.target);
+  const member = getMember(String(fd.get('memberId')));
+  const user = state.session;
+  if (!member || !canEditMember(user, member)) return;
+  const fullName = String(fd.get('fullName') || '').trim();
+  if (!fullName) {
+    showNotice('Enter the member name.', 'error');
+    render();
+    return;
+  }
+  member.fullName = fullName;
+  member.phone = String(fd.get('phone') || '').trim();
+  member.address = String(fd.get('address') || '').trim();
+  member.birthday = String(fd.get('birthday') || '');
+  if (user.role === 'admin') member.areaId = String(fd.get('areaId') || '');
+  saveDb();
+  showNotice('Member details updated.');
+  render();
+}
+
+function handleDeleteMember(memberId) {
+  const member = getMember(memberId);
+  if (!member || state.session?.role !== 'admin') return;
+  const count = getAttendanceCount(memberId);
+  openDialog({
+    title: 'Delete Member',
+    tone: 'danger',
+    message: `Delete <strong>${escapeHtml(member.fullName)}</strong> permanently? Their ${count} attendance record(s) will also be removed. This cannot be undone.`,
+    confirmLabel: 'Delete Member',
+    cancelLabel: 'Cancel',
+    onConfirm: () => {
+      state.db.members = state.db.members.filter(m => m.id !== memberId);
+      state.db.attendance = state.db.attendance.filter(a => a.memberId !== memberId);
+      state.db.messageRules.forEach(rule => {
+        if (rule.selectedIds) rule.selectedIds = rule.selectedIds.filter(id => id !== memberId);
+      });
+      state.modalMemberId = null;
+      saveDb();
+      showNotice('Member deleted.');
+    },
+  });
+}
+
+function handleChangePassword(event) {
+  event.preventDefault();
+  const fd = new FormData(event.target);
+  const user = getCurrentUser();
+  const current = String(fd.get('currentPassword') || '');
+  const next = String(fd.get('newPassword') || '');
+  const confirm = String(fd.get('confirmPassword') || '');
+  if (!user) return;
+  if (current !== user.password) {
+    showNotice('Your current password is not correct.', 'error');
+  } else if (next.length < 6) {
+    showNotice('Use at least 6 characters for the new password.', 'error');
+  } else if (next !== confirm) {
+    showNotice('The new passwords do not match.', 'error');
+  } else {
+    user.password = next;
+    saveDb();
+    showNotice('Password updated.');
+  }
+  render();
+}
+
+function handleResetPassword(event) {
+  event.preventDefault();
+  if (state.session?.role !== 'admin') return;
+  const fd = new FormData(event.target);
+  const target = getUser(String(fd.get('userId')));
+  const next = String(fd.get('newPassword') || '').trim();
+  if (!target) return;
+  if (next.length < 6) {
+    showNotice('Use at least 6 characters for the new password.', 'error');
+    render();
+    return;
+  }
+  target.password = next;
+  saveDb();
+  showNotice(`Password reset for ${target.name}.`);
+  render();
+}
+
+function handleRemoveUser(userId) {
+  const target = getUser(userId);
+  if (!target || state.session?.role !== 'admin' || target.id === state.session.id) return;
+  const g12Count = state.db.members.filter(m => m.g12PastorId === userId).length;
+  openDialog({
+    title: 'Remove Account',
+    tone: 'danger',
+    message: `Remove the login for <strong>${escapeHtml(target.name)}</strong> (${escapeHtml(ROLE_LABELS[target.role] || target.role)})?${g12Count ? ` Their ${g12Count} G12 member(s) will become unassigned.` : ''} Members and attendance records are kept.`,
+    confirmLabel: 'Remove Account',
+    cancelLabel: 'Cancel',
+    onConfirm: () => {
+      state.db.users = state.db.users.filter(u => u.id !== userId);
+      state.db.members.forEach(member => { if (member.g12PastorId === userId) member.g12PastorId = ''; });
+      state.db.messageRules = state.db.messageRules.filter(rule => !(rule.audienceType === 'g12' && rule.audienceId === userId));
+      if (state.g12FocusId === userId) state.g12FocusId = '';
+      saveDb();
+      showNotice('Account removed.');
+    },
+  });
+}
+
+function downloadFile(filename, content, type) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function toCsv(rows) {
+  const cell = (value) => {
+    const text = String(value ?? '');
+    return /[",\n\r]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+  };
+  // Leading BOM so Excel reads names with accents correctly.
+  return '\ufeff' + rows.map(row => row.map(cell).join(',')).join('\r\n');
+}
+
+function handleDownloadBackup() {
+  state.db.lastBackupAt = nowStr();
+  saveDb();
+  const backup = { app: 'refiners-city-attendance', version: 1, exportedAt: nowStr(), data: { ...state.db, session: null } };
+  downloadFile(`refiners-city-backup-${todayStr()}.json`, JSON.stringify(backup, null, 2), 'application/json');
+  showNotice('Backup downloaded. Keep the file somewhere safe.');
+  render();
+}
+
+function handleRestoreBackup(event) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    let data;
+    try {
+      const parsed = JSON.parse(String(reader.result));
+      data = parsed?.app === 'refiners-city-attendance' ? parsed.data : parsed;
+      if (!data || !Array.isArray(data.users) || !Array.isArray(data.members) || !Array.isArray(data.attendance)) throw new Error('invalid');
+    } catch {
+      openDialog({ title: 'Restore Failed', tone: 'danger', message: 'That file is not a valid Refiners City backup.' });
+      return;
+    }
+    openDialog({
+      title: 'Restore Backup',
+      tone: 'danger',
+      message: `Replace everything in this browser with the backup <strong>${escapeHtml(file.name)}</strong>? It contains ${data.members.length} member(s), ${(data.serviceEvents || []).length} service(s), and ${data.users.length} account(s). Current data will be overwritten. Download a backup first if you are unsure.`,
+      confirmLabel: 'Restore',
+      cancelLabel: 'Cancel',
+      onConfirm: () => {
+        const currentEmail = state.session?.email?.toLowerCase();
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...data, session: null }));
+        state.db = loadDb();
+        // Stay signed in if the same account exists in the backup.
+        const sameUser = state.db.users.find(u => u.email.toLowerCase() === currentEmail);
+        state.db.session = sameUser?.id || null;
+        state.selectedAttendanceEventId = '';
+        state.modalMemberId = null;
+        state.areaFocusId = '';
+        state.g12FocusId = '';
+        saveDb();
+        showNotice('Backup restored.');
+      },
+    });
+  };
+  reader.readAsText(file);
+  event.target.value = '';
+}
+
+function handleExportCsv(kind) {
+  const areaName = (id) => getArea(id)?.name || '';
+  const className = (id) => { const pastor = getUser(id); return pastor ? (pastor.className || pastor.name) : ''; };
+  let rows;
+  if (kind === 'members') {
+    rows = [['Full Name', 'Phone', 'Address', 'Birthday', 'Area', 'G12 Class', 'Level', 'Services Attended', 'Date Added']];
+    state.db.members.slice().sort((a, b) => a.fullName.localeCompare(b.fullName)).forEach(m => {
+      const count = getAttendanceCount(m.id);
+      rows.push([m.fullName, m.phone, m.address, m.birthday, areaName(m.areaId), className(m.g12PastorId), getLevelFromCount(count), count, m.createdAt ? isoDate(new Date(m.createdAt)) : '']);
+    });
+  } else if (kind === 'attendance') {
+    rows = [['Service Date', 'Service', 'Category', 'Member', 'Phone', 'Area', 'G12 Class']];
+    const events = new Map(state.db.serviceEvents.map(e => [e.id, e]));
+    state.db.attendance
+      .map(a => ({ event: events.get(a.eventId), member: getMember(a.memberId) }))
+      .filter(r => r.event && r.member)
+      .sort((a, b) => b.event.date.localeCompare(a.event.date) || a.event.name.localeCompare(b.event.name) || a.member.fullName.localeCompare(b.member.fullName))
+      .forEach(({ event, member }) => rows.push([event.date, event.name, event.category, member.fullName, member.phone, areaName(member.areaId), className(member.g12PastorId)]));
+  } else if (kind === 'services') {
+    const total = state.db.members.length;
+    rows = [['Service Date', 'Weekday', 'Service', 'Category', 'Present', 'Absent', 'Attendance Rate']];
+    state.db.serviceEvents.slice().sort((a, b) => b.date.localeCompare(a.date)).forEach(e => {
+      const present = state.db.attendance.filter(a => a.eventId === e.id).length;
+      rows.push([e.date, getWeekdayName(e.date), e.name, e.category, present, Math.max(total - present, 0), total ? `${Math.round((present / total) * 100)}%` : '0%']);
+    });
+  } else if (kind === 'prospects') {
+    rows = [['Full Name', 'Phone', 'Address', 'Birthday', 'Area', 'Date Added']];
+    state.db.prospects.slice().sort((a, b) => a.fullName.localeCompare(b.fullName)).forEach(p => {
+      rows.push([p.fullName, p.phone, p.address, p.birthday, areaName(p.areaId), p.createdAt ? isoDate(new Date(p.createdAt)) : '']);
+    });
+  } else {
+    return;
+  }
+  downloadFile(`refiners-city-${kind}-${todayStr()}.csv`, toCsv(rows), 'text/csv;charset=utf-8');
 }
 
 function handleAddArea(event) {
@@ -2016,6 +2491,88 @@ function handleAddProspect(event) {
   render();
 }
 
+function canManageProspect(user, person) {
+  if (!user || !person) return false;
+  if (user.role === 'admin') return true;
+  return user.role === 'bishop' && !!user.areaId && person.areaId === user.areaId;
+}
+
+function handleProspectEditSave(event) {
+  event.preventDefault();
+  const fd = new FormData(event.target);
+  const person = state.db.prospects.find(p => p.id === String(fd.get('prospectId')));
+  const user = state.session;
+  if (!person || !canManageProspect(user, person)) return;
+  const fullName = String(fd.get('fullName') || '').trim();
+  if (!fullName) {
+    showNotice('Enter the person name.', 'error');
+    render();
+    return;
+  }
+  person.fullName = fullName;
+  person.phone = String(fd.get('phone') || '').trim();
+  person.address = String(fd.get('address') || '').trim();
+  person.birthday = String(fd.get('birthday') || '');
+  if (user.role === 'admin') person.areaId = String(fd.get('areaId') || '');
+  state.editingProspectId = null;
+  saveDb();
+  showNotice('Non member updated.');
+  render();
+}
+
+function removeProspectReferences(prospectId) {
+  state.db.prospects = state.db.prospects.filter(p => p.id !== prospectId);
+  state.db.messageRules.forEach(rule => {
+    if (rule.selectedIds) rule.selectedIds = rule.selectedIds.filter(id => id !== prospectId);
+  });
+}
+
+function handleConvertProspect(prospectId) {
+  const person = state.db.prospects.find(p => p.id === prospectId);
+  const user = state.session;
+  if (!person || !canManageProspect(user, person)) return;
+  openDialog({
+    title: 'Convert to Member',
+    message: `Move <strong>${escapeHtml(person.fullName)}</strong> from the Non Members list into the Members database?`,
+    confirmLabel: 'Convert',
+    cancelLabel: 'Cancel',
+    onConfirm: () => {
+      state.db.members.push({
+        id: uid('member'),
+        fullName: person.fullName,
+        phone: person.phone || '',
+        address: person.address || '',
+        birthday: person.birthday || '',
+        areaId: person.areaId || '',
+        g12PastorId: '',
+        createdAt: nowStr(),
+        createdByUserId: user.id,
+        convertedFromProspectAt: person.createdAt || '',
+      });
+      removeProspectReferences(prospectId);
+      saveDb();
+      showNotice(`${person.fullName} is now a member.`);
+    },
+  });
+}
+
+function handleDeleteProspect(prospectId) {
+  const person = state.db.prospects.find(p => p.id === prospectId);
+  if (!person || state.session?.role !== 'admin') return;
+  openDialog({
+    title: 'Delete Non Member',
+    tone: 'danger',
+    message: `Delete <strong>${escapeHtml(person.fullName)}</strong> from the Non Members list? This cannot be undone.`,
+    confirmLabel: 'Delete',
+    cancelLabel: 'Cancel',
+    onConfirm: () => {
+      removeProspectReferences(prospectId);
+      saveDb();
+      showNotice('Non member deleted.');
+    },
+  });
+}
+
 function handleMemberModalG12Save(event) {
   event.preventDefault();
   const fd = new FormData(event.target);
@@ -2134,6 +2691,49 @@ function bindAttendanceWorkspace() {
   q('[data-message-absentees-selected]')?.addEventListener('click', () => handleAbsenteeMessaging('selected'));
   q('#attendanceQuickMemberForm')?.addEventListener('submit', handleAttendanceQuickMemberAdd);
   q('[data-close-attendance-service]')?.addEventListener('click', handleCloseAttendanceService);
+  q('[data-delete-service]')?.addEventListener('click', (e) => handleDeleteService(e.target.dataset.deleteService));
+}
+
+function handleDeleteService(eventId) {
+  const eventObj = state.db.serviceEvents.find(item => item.id === eventId);
+  if (!eventObj || state.session?.role !== 'admin') return;
+  const count = state.db.attendance.filter(a => a.eventId === eventId).length;
+  openDialog({
+    title: 'Delete Service',
+    tone: 'danger',
+    message: `Delete <strong>${escapeHtml(eventObj.name)}</strong> on ${fmtDate(eventObj.date)}? Its ${count} attendance record(s) will be removed and members' growth levels will be recalculated. This cannot be undone.`,
+    confirmLabel: 'Delete Service',
+    cancelLabel: 'Cancel',
+    onConfirm: () => {
+      state.db.serviceEvents = state.db.serviceEvents.filter(item => item.id !== eventId);
+      state.db.attendance = state.db.attendance.filter(a => a.eventId !== eventId);
+      if (eventObj.isDefaultSeed && eventObj.templateId) {
+        state.db.dismissedDefaultServices ||= [];
+        state.db.dismissedDefaultServices.push(`${eventObj.templateId}_${eventObj.date}`);
+      }
+      if (state.selectedAttendanceEventId === eventId) state.selectedAttendanceEventId = '';
+      saveDb();
+      showNotice('Service deleted.');
+    },
+  });
+}
+
+function handleDeleteRule(ruleId) {
+  const rule = state.db.messageRules.find(r => r.id === ruleId);
+  if (!rule || state.session?.role !== 'admin') return;
+  openDialog({
+    title: 'Delete Rule',
+    tone: 'danger',
+    message: `Delete the automation rule <strong>${escapeHtml(rule.title)}</strong>?`,
+    confirmLabel: 'Delete Rule',
+    cancelLabel: 'Cancel',
+    onConfirm: () => {
+      state.db.messageRules = state.db.messageRules.filter(r => r.id !== ruleId);
+      state.db.automationLog = state.db.automationLog.filter(token => !token.startsWith(`${ruleId}_`));
+      saveDb();
+      showNotice('Rule deleted.');
+    },
+  });
 }
 
 function handleAttendanceQuickMemberAdd(event) {

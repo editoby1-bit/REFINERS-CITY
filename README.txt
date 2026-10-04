@@ -24,17 +24,36 @@ WHAT IS INSIDE
   * everyone
   * birthdays today
   * all non members
-- Saved scheduled / holiday / birthday rules
+- Saved scheduled / holiday / birthday rules (admin can delete rules)
+- Edit / delete members (admin; bishops can edit members in their own area)
+- Edit / delete non members, and convert a non member into a member
+- Delete a service (admin) - its attendance is removed and growth levels recalculate
+- Settings & Backup (admin):
+  * download a full backup file and restore it (also how you move to a new phone/computer)
+  * export Members, Attendance Records, Service Summary and Non Members as CSV (Excel / Google Sheets)
+  * reset any account password, remove accounts
+- My Account: every user can change their own password
 
 IMPORTANT NOTE ABOUT WHATSAPP
 Because GitHub Pages is static, WhatsApp sending works by opening WhatsApp chat links with the prepared message text.
 That means:
-- manual messaging works immediately
+- messaging one person opens their WhatsApp chat straight away
+- messaging many people opens a send list: tap each name to open their chat with the message ready
+  (browsers block more than one pop-up at a time, so this is the reliable way to send in bulk)
 - scheduled / automated rules become due inside the app
 - when due, you can run them and the app opens the correct WhatsApp chats
 There is no server in this version, so background sending while the app is fully closed is not possible yet.
 
+IMPORTANT ABOUT YOUR DATA
+All records are stored in the browser on the device you use (no server yet).
+- Clearing browser data, or using another phone/computer, will NOT show the same records.
+- Use Settings & Backup > Download Full Backup regularly (e.g. after every Sunday) and keep the file safe.
+- To move to a new device, open the app there, log in as admin and use Restore From Backup.
+
 DEMO LOGIN ACCOUNTS
+Change these passwords (Settings / My Account) before entering real church records.
+The demo hint on the login page disappears once a demo password has been changed.
+
 1. Church Admin
    Email: admin@refiners.local
    Password: admin123
@@ -66,6 +85,6 @@ HOW TO DEPLOY TO GITHUB PAGES
 NEXT PHASE IDEAS
 - true backend with Supabase or Firebase
 - real scheduled delivery via server jobs
-- import/export CSV
+- import members from CSV
 - analytics charts
 - follow-up task tracker
