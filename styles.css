@@ -434,3 +434,10 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .send-queue-list { max-height: 50vh; }
 .send-queue-list .check-row.sent { opacity: 0.6; }
 a.btn, label.btn { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; cursor: pointer; }
+
+/* Online database */
+.badge.danger-badge { background: #fde9ec; color: #8e1b2d; }
+.approval-row { padding: 12px 0; border-bottom: 1px solid #f0dfe7; }
+.approval-row:last-child { border-bottom: 0; }
+.auth-form .link-btn { justify-self: start; }
+[data-user-role], [data-user-area] { min-width: 140px; }

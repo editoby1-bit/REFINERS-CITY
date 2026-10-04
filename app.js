@@ -99,8 +99,12 @@ const ROLE_LABELS = {
 };
 
 const state = {
-  db: loadDb(),
+  db: CLOUD_ENABLED ? emptyDb() : loadDb(),
   session: null,
+  cloudUserId: null,
+  cloudBooting: CLOUD_ENABLED,
+  recoveryMode: false,
+  remoteRenderPending: false,
   view: 'dashboard',
   modalMemberId: null,
   memberTab: 'members',
@@ -247,6 +251,10 @@ function loadDb() {
 }
 
 function saveDb() {
+  if (CLOUD_ENABLED) {
+    scheduleCloudSync();
+    return;
+  }
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state.db));
 }
 
@@ -280,6 +288,7 @@ function clearSession() {
 }
 
 function getCurrentUser() {
+  if (CLOUD_ENABLED) return allProfileUsers(state.db).find(u => u.id === state.cloudUserId) || null;
   return state.db.users.find(u => u.id === state.db.session) || null;
 }
 
@@ -610,12 +619,171 @@ function personaliseMessage(message, target) {
 }
 
 function render() {
+  state.remoteRenderPending = false;
+  const checklistScroll = q('#attendanceChecklist')?.scrollTop || 0;
   state.session = getCurrentUser();
-  if (!state.session) {
+  if (CLOUD_ENABLED && state.cloudBooting) {
+    renderLoading();
+  } else if (CLOUD_ENABLED && state.recoveryMode) {
+    renderPasswordRecovery();
+  } else if (CLOUD_ENABLED && state.cloudUserId && !state.session?.approved) {
+    renderPending();
+  } else if (!state.session) {
     renderAuth();
   } else {
     renderApp();
   }
+  const checklist = q('#attendanceChecklist');
+  if (checklist) checklist.scrollTop = checklistScroll;
+}
+
+function renderAuthShell(content) {
+  app.innerHTML = `
+    <div class="auth-wrap">
+      <div class="auth-card">
+        <div class="auth-brand">
+          <img src="assets/logo.jpg" alt="Refiners City logo" />
+          <h2>Refiners City International Church</h2>
+          <p>Attendance, membership growth, area structure, G12 tracking, follow-up lists, birthdays, and WhatsApp outreach in one place.</p>
+        </div>
+        <div class="auth-form">${content}</div>
+      </div>
+    </div>
+  `;
+}
+
+function renderNoticeBox() {
+  return state.notice ? `<div class="notice ${state.notice.type === 'success' ? 'success-box' : 'danger-box'}">${escapeHtml(state.notice.message)}</div>` : '';
+}
+
+function renderLoading() {
+  renderAuthShell(`<h1 class="auth-title">Loading…</h1><p class="auth-subtitle">Connecting to the church database.</p>`);
+}
+
+function renderPending() {
+  const user = state.session;
+  renderAuthShell(`
+    <h1 class="auth-title">${user ? 'Waiting for approval' : 'Account not active'}</h1>
+    ${renderNoticeBox()}
+    <p class="auth-subtitle">${user
+      ? `Hello ${escapeHtml(user.name || user.email)}. Your ${escapeHtml(ROLE_LABELS[user.role] || '')} account has been created. The Church Admin needs to approve it before you can see church records. This page opens automatically once you are approved.`
+      : 'This login no longer has access to the app. Please contact the Church Admin.'}</p>
+    <div class="inline-actions">
+      <button class="btn secondary" type="button" data-action="refresh-access">Check again</button>
+      <button class="btn" type="button" data-action="logout">Logout</button>
+    </div>
+  `);
+  q('[data-action="logout"]').addEventListener('click', handleLogout);
+  q('[data-action="refresh-access"]').addEventListener('click', async () => {
+    try {
+      await loadCloudData();
+    } catch (error) {
+      showNotice(error.message || 'Could not reach the database.', 'error');
+    }
+    render();
+  });
+}
+
+function renderPasswordRecovery() {
+  renderAuthShell(`
+    <h1 class="auth-title">Set a new password</h1>
+    ${renderNoticeBox()}
+    <form id="recoveryForm" class="form-grid single">
+      <div class="field"><label>New Password</label><input type="password" name="newPassword" minlength="6" required /></div>
+      <div class="field"><label>Confirm New Password</label><input type="password" name="confirmPassword" minlength="6" required /></div>
+      <button class="btn" type="submit">Save New Password</button>
+    </form>
+  `);
+  q('#recoveryForm').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const fd = new FormData(event.target);
+    const next = String(fd.get('newPassword') || '');
+    if (next !== String(fd.get('confirmPassword') || '')) {
+      showNotice('The new passwords do not match.', 'error');
+      render();
+      return;
+    }
+    const { data, error } = await cloud.auth.updateUser({ password: next });
+    if (error) {
+      showNotice(error.message, 'error');
+      render();
+      return;
+    }
+    state.recoveryMode = false;
+    showNotice('Password updated.');
+    await enterCloudSession(data.user);
+  });
+}
+
+async function initCloud() {
+  render();
+  cloud.auth.onAuthStateChange((event, session) => {
+    if (event === 'PASSWORD_RECOVERY') {
+      state.recoveryMode = true;
+      state.cloudBooting = false;
+      if (session?.user) state.cloudUserId = session.user.id;
+      setTimeout(render, 0);
+    } else if (event === 'SIGNED_OUT' && state.cloudUserId) {
+      resetCloudState();
+      setTimeout(render, 0);
+    }
+  });
+  try {
+    const { data } = await cloud.auth.getSession();
+    if (data.session?.user && !state.recoveryMode) {
+      await enterCloudSession(data.session.user);
+      return;
+    }
+  } catch (error) {
+    showNotice(error.message || 'Could not reach the database.', 'error');
+  }
+  state.cloudBooting = false;
+  render();
+}
+
+async function enterCloudSession(authUser) {
+  state.cloudUserId = authUser.id;
+  state.cloudBooting = true;
+  render();
+  try {
+    await loadCloudData();
+    subscribeToCloudChanges();
+    // The admin seeds the standard services the first time and keeps next week's services ready.
+    if (getCurrentUser()?.role === 'admin' && getCurrentUser()?.approved) {
+      ensureDefaultServiceTemplates(state.db);
+      ensureDefaultExistingServices(state.db);
+      saveDb();
+    }
+  } catch (error) {
+    showNotice(`Could not load church records: ${error.message || error}`, 'error');
+  }
+  state.cloudBooting = false;
+  state.view = 'dashboard';
+  render();
+}
+
+function resetCloudState() {
+  unsubscribeFromCloudChanges();
+  clearTimeout(cloudSync.timer);
+  state.cloudUserId = null;
+  state.db = emptyDb();
+  cloudSync.snapshot = new Map();
+  cloudSync.profileSnapshot = new Map();
+  state.selectedAttendanceEventId = '';
+  state.modalMemberId = null;
+  state.areaFocusId = '';
+  state.g12FocusId = '';
+}
+
+async function handleLogout() {
+  clearNotice();
+  if (CLOUD_ENABLED) {
+    resetCloudState();
+    await cloud.auth.signOut();
+  } else {
+    clearSession();
+  }
+  render();
 }
 
 const DEMO_ACCOUNTS = [
@@ -647,8 +815,10 @@ function renderAuth() {
         </div>
         <div class="auth-form">
           <h1 class="auth-title">Welcome back</h1>
-          ${state.notice ? `<div class="notice ${state.notice.type === 'success' ? 'success-box' : ''}">${escapeHtml(state.notice.message)}</div>` : ''}
-          <p class="auth-subtitle">Sign in to continue, or create a pastor / bishop account. Church Admin remains the only role that can mark attendance.</p>
+          ${renderNoticeBox()}
+          <p class="auth-subtitle">${CLOUD_ENABLED
+            ? 'Sign in to continue, or create a pastor / bishop account. New accounts are approved by the Church Admin. The very first account created becomes the Church Admin.'
+            : 'Sign in to continue, or create a pastor / bishop account. Church Admin remains the only role that can mark attendance.'}</p>
 
           <div class="tabs">
             <button class="active" data-auth-tab="login">Login</button>
@@ -666,6 +836,7 @@ function renderAuth() {
                 <input type="password" name="password" placeholder="Enter password" required />
               </div>
               <button class="btn" type="submit">Login</button>
+              ${CLOUD_ENABLED ? `<button class="link-btn" type="button" data-forgot-password>Forgot password?</button>` : ''}
             </form>
           </div>
 
@@ -724,6 +895,19 @@ function renderAuth() {
   signupForm.addEventListener('submit', handleSignup);
   signupForm.role.addEventListener('change', syncSignupVisibility);
   syncSignupVisibility();
+  q('[data-forgot-password]')?.addEventListener('click', handleForgotPassword);
+}
+
+async function handleForgotPassword() {
+  const email = String(q('#loginForm input[name="email"]').value || '').trim().toLowerCase();
+  if (!email) {
+    showNotice('Type your email address first, then tap "Forgot password?".', 'error');
+    renderAuth();
+    return;
+  }
+  const { error } = await cloud.auth.resetPasswordForEmail(email, { redirectTo: window.location.href.split('#')[0] });
+  showNotice(error ? error.message : `If ${email} has an account, a password reset link has been sent to it.`, error ? 'error' : 'success');
+  renderAuth();
 }
 
 function syncSignupVisibility() {
@@ -731,14 +915,27 @@ function syncSignupVisibility() {
   if (!form) return;
   const role = form.role.value;
   q('[data-signup-class-field]').classList.toggle('hidden', role !== 'g12');
-  q('[data-signup-area-field]').classList.toggle('hidden', role !== 'bishop');
+  q('[data-signup-area-field]').classList.toggle('hidden', role !== 'bishop' || CLOUD_ENABLED);
 }
 
-function handleLogin(event) {
+async function handleLogin(event) {
   event.preventDefault();
   const fd = new FormData(event.target);
   const email = String(fd.get('email')).trim().toLowerCase();
   const password = String(fd.get('password'));
+  if (CLOUD_ENABLED) {
+    const button = event.target.querySelector('button[type="submit"]');
+    button.disabled = true;
+    const { data, error } = await cloud.auth.signInWithPassword({ email, password });
+    if (error) {
+      showNotice(error.message === 'Invalid login credentials' ? 'Invalid email or password.' : error.message, 'error');
+      renderAuth();
+      return;
+    }
+    clearNotice();
+    await enterCloudSession(data.user);
+    return;
+  }
   const user = state.db.users.find(u => u.email.toLowerCase() === email && u.password === password);
   if (!user) {
     showNotice('Invalid email or password.', 'error');
@@ -751,11 +948,45 @@ function handleLogin(event) {
   render();
 }
 
-function handleSignup(event) {
+async function handleSignup(event) {
   event.preventDefault();
   const fd = new FormData(event.target);
   const role = String(fd.get('role'));
   const email = String(fd.get('email')).trim().toLowerCase();
+  if (CLOUD_ENABLED) {
+    const className = String(fd.get('className') || '').trim();
+    if (role === 'g12' && !className) {
+      showNotice('G12 pastors must enter their class name.', 'error');
+      renderAuth();
+      return;
+    }
+    const { data, error } = await cloud.auth.signUp({
+      email,
+      password: String(fd.get('password')),
+      options: {
+        emailRedirectTo: window.location.href.split('#')[0],
+        data: { name: String(fd.get('name')).trim(), role, className },
+      },
+    });
+    if (error) {
+      showNotice(error.message, 'error');
+      renderAuth();
+      return;
+    }
+    if (data.user && Array.isArray(data.user.identities) && !data.user.identities.length) {
+      showNotice('That email already has an account. Log in instead.', 'error');
+      renderAuth();
+      return;
+    }
+    if (!data.session) {
+      showNotice('Account created. Check your email and tap the confirmation link, then log in here.');
+      renderAuth();
+      return;
+    }
+    clearNotice();
+    await enterCloudSession(data.user);
+    return;
+  }
   if (state.db.users.some(u => u.email.toLowerCase() === email)) {
     showNotice('That email already exists.', 'error');
     renderAuth();
@@ -841,6 +1072,9 @@ function renderApp() {
           </div>
           <div class="inline-actions">
             <span class="badge neutral">${ROLE_LABELS[user.role]}</span>
+            ${CLOUD_ENABLED
+              ? `<span id="syncBadge" class="badge ${cloudSync.status === 'error' ? 'danger-badge' : cloudSync.status === 'saving' ? 'warn' : 'success'}">${syncStatusLabel()}</span>`
+              : `<span class="badge danger-badge" title="Records are only stored in this browser">Not connected to online database</span>`}
             ${getDueAutomations().length ? `<span class="badge warn">${getDueAutomations().length} due automation${getDueAutomations().length > 1 ? 's' : ''}</span>` : ''}
             <button class="btn secondary tiny topbar-logout" data-action="logout">Logout</button>
           </div>
@@ -1583,9 +1817,38 @@ function renderAutomation() {
   `;
 }
 
+function renderPendingApprovals() {
+  const pending = (state.db.pendingUsers || []).slice().sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+  return `
+    <section class="card">
+      <h3>Accounts Waiting For Approval</h3>
+      ${pending.length ? pending.map(person => `
+        <form class="toolbar compact-toolbar approval-row" data-approve-form="${person.id}">
+          <div class="field"><label>Name</label><input value="${escapeHtml(`${person.name || '—'} (${person.email})`)}" disabled /></div>
+          <div class="field"><label>Role</label><select name="role">${['ordained', 'g12', 'bishop', 'admin'].map(role => `<option value="${role}" ${person.role === role ? 'selected' : ''}>${ROLE_LABELS[role]}</option>`).join('')}</select></div>
+          <div class="field"><label>Area (bishops)</label><select name="areaId"><option value="">No area</option>${state.db.areas.map(a => `<option value="${a.id}" ${person.areaId === a.id ? 'selected' : ''}>${escapeHtml(a.name)}</option>`).join('')}</select></div>
+          <div class="field"><label>G12 Class Name</label><input name="className" value="${escapeHtml(person.className || '')}" /></div>
+          <div class="field" style="align-self:end;"><div class="inline-actions"><button class="btn tiny success" type="submit">Approve</button><button class="btn tiny danger" type="button" data-reject-user="${person.id}">Reject</button></div></div>
+        </form>
+      `).join('') : `<div class="empty">No accounts are waiting. When pastors or bishops sign up, approve them here.</div>`}
+    </section>
+  `;
+}
+
+function getLegacyBrowserData() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    const data = raw ? JSON.parse(raw) : null;
+    return data && Array.isArray(data.members) ? data : null;
+  } catch {
+    return null;
+  }
+}
+
 function renderSettings() {
   const user = state.session;
   const isAdmin = user.role === 'admin';
+  const legacyData = CLOUD_ENABLED && isAdmin ? getLegacyBrowserData() : null;
   const users = state.db.users.slice().sort((a, b) => a.role.localeCompare(b.role) || a.name.localeCompare(b.name));
   const lastBackup = state.db.lastBackupAt;
   return `
@@ -1602,7 +1865,10 @@ function renderSettings() {
       ${isAdmin ? `
         <div class="card">
           <h3>Backup & Restore</h3>
-          <div class="notice ${lastBackup ? '' : 'danger-box'}">All records are saved in this browser only. ${lastBackup ? `Last backup: <strong>${fmtDateTime(lastBackup)}</strong>.` : '<strong>No backup has been downloaded yet.</strong>'} Download a backup regularly (for example after every Sunday) and keep it somewhere safe, such as Google Drive. A backup is also how you move the app to another phone or computer.</div>
+          ${CLOUD_ENABLED
+            ? `<div class="notice success-box">Records are saved in the online church database and shared live with every approved account. ${lastBackup ? `Last backup file: <strong>${fmtDateTime(lastBackup)}</strong>.` : ''} A backup file is still a good extra copy to keep, for example once a month.</div>`
+            : `<div class="notice ${lastBackup ? '' : 'danger-box'}">The app is not connected to the online database yet, so all records are saved in this browser only. ${lastBackup ? `Last backup: <strong>${fmtDateTime(lastBackup)}</strong>.` : '<strong>No backup has been downloaded yet.</strong>'} Download a backup regularly and keep it somewhere safe. A backup is also how you move records into the online database once it is connected.</div>`}
+          ${legacyData ? `<div class="notice section-gap-top">This browser still holds records from before the online database (${legacyData.members.length} member(s), ${(legacyData.serviceEvents || []).length} service(s)). <div class="inline-actions section-gap-top"><button class="btn tiny" type="button" data-import-legacy>Upload them to the online database</button><button class="btn tiny secondary" type="button" data-clear-legacy>Remove from this browser</button></div></div>` : ''}
           <div class="inline-actions section-gap-top">
             <button class="btn" type="button" data-download-backup>Download Full Backup</button>
             <label class="btn secondary" for="restoreBackupInput">Restore From Backup</label>
@@ -1619,13 +1885,16 @@ function renderSettings() {
         </div>
       ` : ''}
     </section>
+    ${isAdmin && CLOUD_ENABLED ? renderPendingApprovals() : ''}
     ${isAdmin ? `
       <section class="card">
         <h3>User Accounts</h3>
         <form id="resetPasswordForm" class="toolbar compact-toolbar">
           <div class="field"><label>Account</label><select name="userId" required>${users.map(u => `<option value="${u.id}">${escapeHtml(u.name)} (${escapeHtml(ROLE_LABELS[u.role] || u.role)})</option>`).join('')}</select></div>
-          <div class="field"><label>New Password</label><input type="text" name="newPassword" minlength="6" required /></div>
-          <div class="field" style="align-self:end;"><button class="btn tiny" type="submit">Reset Password</button></div>
+          ${CLOUD_ENABLED
+            ? `<div class="field" style="align-self:end;"><button class="btn tiny" type="submit">Email Password Reset Link</button></div>`
+            : `<div class="field"><label>New Password</label><input type="text" name="newPassword" minlength="6" required /></div>
+               <div class="field" style="align-self:end;"><button class="btn tiny" type="submit">Reset Password</button></div>`}
         </form>
         <div class="table-wrap section-gap-top">
           <table>
@@ -1635,8 +1904,14 @@ function renderSettings() {
                 <tr>
                   <td>${escapeHtml(u.name)}</td>
                   <td>${escapeHtml(u.email)}</td>
-                  <td>${escapeHtml(ROLE_LABELS[u.role] || u.role)}</td>
-                  <td>${u.role === 'g12' ? escapeHtml(u.className || '—') : u.role === 'bishop' ? escapeHtml(getArea(u.areaId)?.name || 'No area') : '—'}</td>
+                  <td>${CLOUD_ENABLED && u.id !== user.id
+                    ? `<select class="mini-select" data-user-role="${u.id}">${['ordained', 'g12', 'bishop', 'admin'].map(role => `<option value="${role}" ${u.role === role ? 'selected' : ''}>${ROLE_LABELS[role]}</option>`).join('')}</select>`
+                    : escapeHtml(ROLE_LABELS[u.role] || u.role)}</td>
+                  <td>${u.role === 'g12' ? escapeHtml(u.className || '—') : u.role === 'bishop'
+                    ? (CLOUD_ENABLED
+                      ? `<select class="mini-select" data-user-area="${u.id}"><option value="">No area</option>${state.db.areas.map(a => `<option value="${a.id}" ${u.areaId === a.id ? 'selected' : ''}>${escapeHtml(a.name)}</option>`).join('')}</select>`
+                      : escapeHtml(getArea(u.areaId)?.name || 'No area'))
+                    : '—'}</td>
                   <td>${fmtDate(u.createdAt)}</td>
                   <td>${u.id === user.id ? '<span class="badge neutral">You</span>' : `<button class="btn tiny danger" type="button" data-remove-user="${u.id}">Remove</button>`}</td>
                 </tr>
@@ -1836,11 +2111,7 @@ function bindAppEvents() {
     render();
   }));
 
-  qq('[data-action="logout"]').forEach(btn => btn.addEventListener('click', () => {
-    clearSession();
-    clearNotice();
-    render();
-  }));
+  qq('[data-action="logout"]').forEach(btn => btn.addEventListener('click', handleLogout));
 
   q('[data-action="check-automation"]')?.addEventListener('click', () => runDailyAutomationCheck(true));
 
@@ -2046,6 +2317,12 @@ function bindAppEvents() {
     openWhatsappForTargets(targets, message);
   }));
   q('#changePasswordForm')?.addEventListener('submit', handleChangePassword);
+  qq('[data-approve-form]').forEach(form => form.addEventListener('submit', handleApproveUser));
+  qq('[data-reject-user]').forEach(btn => btn.addEventListener('click', () => handleRejectUser(btn.dataset.rejectUser)));
+  qq('[data-user-role]').forEach(sel => sel.addEventListener('change', () => handleUserRoleChange(sel.dataset.userRole, 'role', sel.value)));
+  qq('[data-user-area]').forEach(sel => sel.addEventListener('change', () => handleUserRoleChange(sel.dataset.userArea, 'areaId', sel.value)));
+  q('[data-import-legacy]')?.addEventListener('click', handleImportLegacy);
+  q('[data-clear-legacy]')?.addEventListener('click', handleClearLegacy);
   q('#resetPasswordForm')?.addEventListener('submit', handleResetPassword);
   qq('[data-remove-user]').forEach(btn => btn.addEventListener('click', () => handleRemoveUser(btn.dataset.removeUser)));
   q('[data-download-backup]')?.addEventListener('click', handleDownloadBackup);
@@ -2127,7 +2404,7 @@ function handleDeleteMember(memberId) {
   });
 }
 
-function handleChangePassword(event) {
+async function handleChangePassword(event) {
   event.preventDefault();
   const fd = new FormData(event.target);
   const user = getCurrentUser();
@@ -2135,6 +2412,23 @@ function handleChangePassword(event) {
   const next = String(fd.get('newPassword') || '');
   const confirm = String(fd.get('confirmPassword') || '');
   if (!user) return;
+  if (CLOUD_ENABLED) {
+    if (next.length < 6 || next !== confirm) {
+      showNotice(next.length < 6 ? 'Use at least 6 characters for the new password.' : 'The new passwords do not match.', 'error');
+      render();
+      return;
+    }
+    const check = await createDetachedCloudClient('refiners-password-check').auth.signInWithPassword({ email: user.email, password: current });
+    if (check.error) {
+      showNotice('Your current password is not correct.', 'error');
+      render();
+      return;
+    }
+    const { error } = await cloud.auth.updateUser({ password: next });
+    showNotice(error ? error.message : 'Password updated.', error ? 'error' : 'success');
+    render();
+    return;
+  }
   if (current !== user.password) {
     showNotice('Your current password is not correct.', 'error');
   } else if (next.length < 6) {
@@ -2149,11 +2443,18 @@ function handleChangePassword(event) {
   render();
 }
 
-function handleResetPassword(event) {
+async function handleResetPassword(event) {
   event.preventDefault();
   if (state.session?.role !== 'admin') return;
   const fd = new FormData(event.target);
   const target = getUser(String(fd.get('userId')));
+  if (CLOUD_ENABLED) {
+    if (!target) return;
+    const { error } = await cloud.auth.resetPasswordForEmail(target.email, { redirectTo: window.location.href.split('#')[0] });
+    showNotice(error ? error.message : `A password reset link was emailed to ${target.email}.`, error ? 'error' : 'success');
+    render();
+    return;
+  }
   const next = String(fd.get('newPassword') || '').trim();
   if (!target) return;
   if (next.length < 6) {
@@ -2184,6 +2485,124 @@ function handleRemoveUser(userId) {
       if (state.g12FocusId === userId) state.g12FocusId = '';
       saveDb();
       showNotice('Account removed.');
+    },
+  });
+}
+
+function handleApproveUser(event) {
+  event.preventDefault();
+  if (state.session?.role !== 'admin') return;
+  const id = event.target.dataset.approveForm;
+  const person = state.db.pendingUsers.find(u => u.id === id);
+  if (!person) return;
+  const fd = new FormData(event.target);
+  person.role = String(fd.get('role') || 'ordained');
+  person.areaId = String(fd.get('areaId') || '');
+  person.className = String(fd.get('className') || '').trim();
+  if (person.role === 'g12' && !person.className) {
+    showNotice('Enter the G12 class name before approving a G12 pastor.', 'error');
+    render();
+    return;
+  }
+  if (person.role === 'bishop' && !person.areaId) {
+    showNotice('Choose the area before approving a bishop.', 'error');
+    render();
+    return;
+  }
+  person.approved = true;
+  state.db.pendingUsers = state.db.pendingUsers.filter(u => u.id !== id);
+  state.db.users.push(person);
+  saveDb();
+  showNotice(`${person.name || person.email} approved as ${ROLE_LABELS[person.role]}.`);
+  render();
+}
+
+function handleRejectUser(id) {
+  const person = state.db.pendingUsers.find(u => u.id === id);
+  if (!person || state.session?.role !== 'admin') return;
+  openDialog({
+    title: 'Reject Account',
+    tone: 'danger',
+    message: `Reject the sign-up from <strong>${escapeHtml(person.name || person.email)}</strong>? They will not be able to see church records.`,
+    confirmLabel: 'Reject',
+    cancelLabel: 'Cancel',
+    onConfirm: () => {
+      state.db.pendingUsers = state.db.pendingUsers.filter(u => u.id !== id);
+      saveDb();
+      showNotice('Sign-up rejected.');
+    },
+  });
+}
+
+function handleUserRoleChange(userId, field, value) {
+  const target = getUser(userId);
+  if (!target || state.session?.role !== 'admin') return;
+  target[field] = value;
+  saveDb();
+  showNotice(`${target.name} updated.`);
+  render();
+}
+
+// Bring records from a backup or old browser storage into the online database.
+// Login accounts are not copied (people sign up themselves); references to old accounts
+// are matched to the new accounts by email address.
+function importIntoCloud(data) {
+  const oldUsers = Array.isArray(data.users) ? data.users : [];
+  const byEmail = new Map(state.db.users.map(u => [String(u.email).toLowerCase(), u.id]));
+  const userIdMap = new Map(oldUsers.map(u => [u.id, byEmail.get(String(u.email || '').toLowerCase()) || '']));
+  const mapUser = (id) => (id && userIdMap.has(id) ? userIdMap.get(id) : (state.db.users.some(u => u.id === id) ? id : ''));
+  const next = emptyDb();
+  RECORD_COLLECTIONS.forEach(collection => { next[collection] = Array.isArray(data[collection]) ? data[collection].filter(item => item && item.id) : []; });
+  next.members.forEach(member => {
+    member.g12PastorId = mapUser(member.g12PastorId);
+    member.createdByUserId = mapUser(member.createdByUserId);
+  });
+  next.automationLog = Array.isArray(data.automationLog) ? data.automationLog : [];
+  next.dismissedDefaultServices = Array.isArray(data.dismissedDefaultServices) ? data.dismissedDefaultServices : [];
+  next.lastBackupAt = state.db.lastBackupAt || '';
+  next.users = state.db.users;
+  next.pendingUsers = state.db.pendingUsers;
+  ensureDefaultServiceTemplates(next);
+  // Old G12 pastors who have signed up again keep their class name.
+  oldUsers.forEach(old => {
+    const newId = userIdMap.get(old.id);
+    const account = newId && getUser(newId);
+    if (account && old.role === 'g12' && old.className && !account.className) account.className = old.className;
+  });
+  state.db = next;
+  state.selectedAttendanceEventId = '';
+  state.modalMemberId = null;
+  state.areaFocusId = '';
+  state.g12FocusId = '';
+  saveDb();
+}
+
+function handleImportLegacy() {
+  const data = getLegacyBrowserData();
+  if (!data || state.session?.role !== 'admin') return;
+  openDialog({
+    title: 'Upload Browser Records',
+    tone: 'danger',
+    message: `Replace the online database records with the ${data.members.length} member(s), ${(data.serviceEvents || []).length} service(s) and ${(data.attendance || []).length} attendance record(s) stored in this browser? Login accounts are not copied: pastors and bishops sign up again and you approve them.`,
+    confirmLabel: 'Upload',
+    cancelLabel: 'Cancel',
+    onConfirm: () => {
+      importIntoCloud(data);
+      showNotice('Browser records uploaded to the online database.');
+    },
+  });
+}
+
+function handleClearLegacy() {
+  openDialog({
+    title: 'Remove Browser Records',
+    tone: 'danger',
+    message: 'Delete the old records stored in this browser? Records already in the online database are not affected.',
+    confirmLabel: 'Remove',
+    cancelLabel: 'Cancel',
+    onConfirm: () => {
+      try { localStorage.removeItem(STORAGE_KEY); } catch {}
+      showNotice('Old browser records removed.');
     },
   });
 }
@@ -2235,10 +2654,15 @@ function handleRestoreBackup(event) {
     openDialog({
       title: 'Restore Backup',
       tone: 'danger',
-      message: `Replace everything in this browser with the backup <strong>${escapeHtml(file.name)}</strong>? It contains ${data.members.length} member(s), ${(data.serviceEvents || []).length} service(s), and ${data.users.length} account(s). Current data will be overwritten. Download a backup first if you are unsure.`,
+      message: `Replace everything in this browser with the backup <strong>${escapeHtml(file.name)}</strong>? It contains ${data.members.length} member(s), ${(data.serviceEvents || []).length} service(s), and ${data.users.length} account(s). Current data will be overwritten.${CLOUD_ENABLED ? ' Login accounts are not replaced.' : ''} Download a backup first if you are unsure.`,
       confirmLabel: 'Restore',
       cancelLabel: 'Cancel',
       onConfirm: () => {
+        if (CLOUD_ENABLED) {
+          importIntoCloud(data);
+          showNotice('Backup restored to the online database.');
+          return;
+        }
         const currentEmail = state.session?.email?.toLowerCase();
         localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...data, session: null }));
         state.db = loadDb();
@@ -2597,7 +3021,7 @@ function handleMemberModalG12Save(event) {
   render();
 }
 
-function handleCreateG12Class(event) {
+async function handleCreateG12Class(event) {
   event.preventDefault();
   const fd = new FormData(event.target);
   const name = String(fd.get('name') || '').trim();
@@ -2607,6 +3031,10 @@ function handleCreateG12Class(event) {
   if (!name || !className || !email || !password) {
     showNotice('Complete all G12 class details first.', 'error');
     render();
+    return;
+  }
+  if (CLOUD_ENABLED) {
+    await createCloudG12Pastor({ name, className, email, password }, event.target);
     return;
   }
   if (state.db.users.some(user => user.email.toLowerCase() === email)) {
@@ -2629,6 +3057,34 @@ function handleCreateG12Class(event) {
   saveDb();
   event.target.reset();
   showNotice('G12 class created successfully.');
+  render();
+}
+
+async function createCloudG12Pastor({ name, className, email, password }, form) {
+  if (password.length < 6) {
+    showNotice('Use at least 6 characters for the password.', 'error');
+    render();
+    return;
+  }
+  // A separate client so signing the pastor up does not sign the admin out.
+  const signupClient = createDetachedCloudClient('refiners-g12-signup');
+  const { data, error } = await signupClient.auth.signUp({ email, password, options: { data: { name, role: 'g12', className } } });
+  if (error || !data.user || (Array.isArray(data.user.identities) && !data.user.identities.length)) {
+    showNotice(error?.message || 'That email already has an account.', 'error');
+    render();
+    return;
+  }
+  const { error: approveError } = await cloud.from('profiles')
+    .update({ approved: true, role: 'g12', class_name: className, name })
+    .eq('id', data.user.id);
+  if (approveError) {
+    showNotice(`Account created but not approved yet: ${approveError.message}. Approve it under Settings.`, 'error');
+  } else {
+    showNotice(data.session ? 'G12 class created successfully.' : 'G12 class created. The pastor must confirm their email before logging in.');
+    state.g12FocusId = data.user.id;
+    form.reset();
+  }
+  await loadCloudData();
   render();
 }
 
@@ -3027,4 +3483,5 @@ function addHolidayRule(holidayName) {
   render();
 }
 
-render();
+if (CLOUD_ENABLED) initCloud();
+else render();
