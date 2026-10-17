@@ -441,3 +441,13 @@ a.btn, label.btn { display: inline-flex; align-items: center; justify-content: c
 .approval-row:last-child { border-bottom: 0; }
 .auth-form .link-btn { justify-self: start; }
 [data-user-role], [data-user-area] { min-width: 140px; }
+.usage-meter { height: 12px; border-radius: 999px; background: #f3e6ec; overflow: hidden; margin: 6px 0 8px; }
+.usage-meter span { display: block; height: 100%; background: #1f8a5b; border-radius: inherit; }
+.usage-meter span.warn { background: #c98a12; }
+.usage-meter span.danger { background: var(--danger); }
+
+/* Show / hide password */
+.password-wrap { position: relative; display: flex; align-items: center; }
+.password-wrap input { width: 100%; padding-right: 64px; }
+.password-toggle { position: absolute; right: 8px; border: 0; background: transparent; color: var(--primary, #b0144f); font-weight: 700; font-size: 13px; padding: 6px 8px; cursor: pointer; border-radius: 8px; }
+.password-toggle:focus-visible { outline: 2px solid currentColor; }

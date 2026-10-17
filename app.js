@@ -635,6 +635,33 @@ function render() {
   }
   const checklist = q('#attendanceChecklist');
   if (checklist) checklist.scrollTop = checklistScroll;
+  enhancePasswordFields();
+}
+
+// Adds a Show / Hide button to every password box.
+function enhancePasswordFields(root = document) {
+  qq('input[type="password"]:not([data-password-enhanced])', root).forEach(input => {
+    input.dataset.passwordEnhanced = 'true';
+    const wrap = document.createElement('div');
+    wrap.className = 'password-wrap';
+    input.parentNode.insertBefore(wrap, input);
+    wrap.appendChild(input);
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'password-toggle';
+    toggle.textContent = 'Show';
+    toggle.setAttribute('aria-label', 'Show password');
+    toggle.setAttribute('aria-pressed', 'false');
+    toggle.addEventListener('click', () => {
+      const showing = input.type === 'text';
+      input.type = showing ? 'password' : 'text';
+      toggle.textContent = showing ? 'Show' : 'Hide';
+      toggle.setAttribute('aria-label', showing ? 'Show password' : 'Hide password');
+      toggle.setAttribute('aria-pressed', String(!showing));
+      input.focus();
+    });
+    wrap.appendChild(toggle);
+  });
 }
 
 function renderAuthShell(content) {
@@ -753,6 +780,7 @@ async function enterCloudSession(authUser) {
       ensureDefaultServiceTemplates(state.db);
       ensureDefaultExistingServices(state.db);
       saveDb();
+      purgeOldTombstones();
     }
   } catch (error) {
     showNotice(`Could not load church records: ${error.message || error}`, 'error');
@@ -760,6 +788,17 @@ async function enterCloudSession(authUser) {
   state.cloudBooting = false;
   state.view = 'dashboard';
   render();
+}
+
+// Once a day, the admin's device asks the database to drop deletion markers older than 45 days.
+async function purgeOldTombstones() {
+  try {
+    const last = Number(localStorage.getItem('refiners-last-purge') || 0);
+    if (Date.now() - last < 24 * 60 * 60 * 1000) return;
+    localStorage.setItem('refiners-last-purge', String(Date.now()));
+  } catch {}
+  const { error } = await cloud.rpc('purge_deleted_records');
+  if (error) console.warn('Purge skipped', error.message);
 }
 
 function resetCloudState() {
@@ -778,6 +817,8 @@ function resetCloudState() {
 async function handleLogout() {
   clearNotice();
   if (CLOUD_ENABLED) {
+    // Don't leave church records on a shared phone after signing out.
+    await recordCache.clear();
     resetCloudState();
     await cloud.auth.signOut();
   } else {
@@ -896,6 +937,7 @@ function renderAuth() {
   signupForm.role.addEventListener('change', syncSignupVisibility);
   syncSignupVisibility();
   q('[data-forgot-password]')?.addEventListener('click', handleForgotPassword);
+  enhancePasswordFields();
 }
 
 async function handleForgotPassword() {
@@ -1817,6 +1859,48 @@ function renderAutomation() {
   `;
 }
 
+const FREE_PLAN_DATABASE_BYTES = 500 * 1024 * 1024;
+
+function formatBytes(bytes) {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+function loadUsageSummary(force = false) {
+  const usage = state.usage;
+  if (usage?.loading || (!force && usage?.fetchedAt && Date.now() - usage.fetchedAt < 10 * 60 * 1000)) return;
+  state.usage = { ...usage, loading: true };
+  cloud.rpc('usage_summary').then(({ data, error }) => {
+    state.usage = error ? { error: error.message, fetchedAt: Date.now() } : { data, fetchedAt: Date.now() };
+    if (state.view === 'settings') requestRemoteRender();
+  });
+}
+
+function renderUsagePanel() {
+  loadUsageSummary();
+  const data = state.usage?.data;
+  const percent = data ? Math.min(100, (data.database_bytes / FREE_PLAN_DATABASE_BYTES) * 100) : 0;
+  const counts = data?.collections || {};
+  return `
+    <section class="card">
+      <div class="flow-heading"><div><h3>Database Usage</h3><p class="footer-note">Free plan limit: 500 MB database. The app downloads only changes, so normal use stays far below the 5 GB monthly download allowance.</p></div>
+        <button class="btn tiny secondary" type="button" data-refresh-usage>Refresh</button></div>
+      ${state.usage?.error ? `<div class="notice danger-box">Could not read usage: ${escapeHtml(state.usage.error)}. If this mentions a missing function, run supabase/setup.sql again in Supabase.</div>` : !data ? `<div class="empty">Checking usage…</div>` : `
+        <div class="usage-meter" role="img" aria-label="Database ${percent.toFixed(1)}% of the free limit"><span style="width:${Math.max(percent, 0.5)}%" class="${percent > 80 ? 'danger' : percent > 60 ? 'warn' : ''}"></span></div>
+        <p class="footer-note"><strong>${formatBytes(data.database_bytes)}</strong> of 500 MB used (${percent.toFixed(1)}%). ${percent > 80 ? 'Getting close to the limit: export old attendance to a spreadsheet and ask for help trimming it.' : 'Plenty of room.'}</p>
+        <div class="stat-list">
+          <div class="stat-row"><span>Members</span><strong>${counts.members || 0}</strong></div>
+          <div class="stat-row"><span>Attendance records</span><strong>${counts.attendance || 0}</strong></div>
+          <div class="stat-row"><span>Services</span><strong>${counts.serviceEvents || 0}</strong></div>
+          <div class="stat-row"><span>Non members</span><strong>${counts.prospects || 0}</strong></div>
+          <div class="stat-row"><span>Login accounts</span><strong>${data.accounts || 0}</strong></div>
+        </div>
+        <p class="footer-note">Monthly downloads and live-update messages are shown in Supabase under <strong>Organization → Usage</strong>.</p>
+      `}
+    </section>
+  `;
+}
+
 function renderPendingApprovals() {
   const pending = (state.db.pendingUsers || []).slice().sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
   return `
@@ -1885,6 +1969,7 @@ function renderSettings() {
         </div>
       ` : ''}
     </section>
+    ${isAdmin && CLOUD_ENABLED ? renderUsagePanel() : ''}
     ${isAdmin && CLOUD_ENABLED ? renderPendingApprovals() : ''}
     ${isAdmin ? `
       <section class="card">
@@ -2317,6 +2402,7 @@ function bindAppEvents() {
     openWhatsappForTargets(targets, message);
   }));
   q('#changePasswordForm')?.addEventListener('submit', handleChangePassword);
+  q('[data-refresh-usage]')?.addEventListener('click', () => { loadUsageSummary(true); render(); });
   qq('[data-approve-form]').forEach(form => form.addEventListener('submit', handleApproveUser));
   qq('[data-reject-user]').forEach(btn => btn.addEventListener('click', () => handleRejectUser(btn.dataset.rejectUser)));
   qq('[data-user-role]').forEach(sel => sel.addEventListener('change', () => handleUserRoleChange(sel.dataset.userRole, 'role', sel.value)));
@@ -2574,6 +2660,7 @@ function importIntoCloud(data) {
   state.modalMemberId = null;
   state.areaFocusId = '';
   state.g12FocusId = '';
+  pauseLiveUpdatesUntilSaved();
   saveDb();
 }
 
@@ -2583,7 +2670,7 @@ function handleImportLegacy() {
   openDialog({
     title: 'Upload Browser Records',
     tone: 'danger',
-    message: `Replace the online database records with the ${data.members.length} member(s), ${(data.serviceEvents || []).length} service(s) and ${(data.attendance || []).length} attendance record(s) stored in this browser? Login accounts are not copied: pastors and bishops sign up again and you approve them.`,
+    message: `Replace the online database records with the ${data.members.length} member(s), ${(data.serviceEvents || []).length} service(s) and ${(data.attendance || []).length} attendance record(s) stored in this browser? Login accounts are not copied: pastors and bishops sign up again and you approve them. Large uploads are best done when nobody else has the app open.`,
     confirmLabel: 'Upload',
     cancelLabel: 'Cancel',
     onConfirm: () => {

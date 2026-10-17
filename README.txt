@@ -71,13 +71,42 @@ WHO CAN DO WHAT (enforced by the database, not just the app)
 - Bishops: add / edit members in their area. G12 pastors: assign members to their class.
 - All approved accounts: view records, add non members, use the WhatsApp Centre.
 
+STAYING INSIDE THE FREE SUPABASE PLAN
+Free plan limits: 500 MB database, 5 GB downloads (egress) a month, 200 live connections at once,
+2 million live-update messages a month, 50,000 monthly active users.
+A Free plan project is never charged. If a limit is passed, Supabase warns the owner by email and,
+after a grace period, may restrict the project until the next month or an upgrade. What the app does:
+- Downloads: each phone/computer keeps a copy of the records (IndexedDB) and afterwards downloads
+  only what changed. A normal visit downloads a few KB instead of the whole database. The copy is
+  removed when someone presses Logout.
+- Deletions are kept as tiny markers for 45 days so every device catches up, then cleaned out
+  automatically (the admin's device triggers the clean-up once a day).
+- Live updates: tabs that stay hidden for 5 minutes disconnect and catch up when reopened.
+  Large uploads pause live updates on the uploading device.
+- Saving: edits are grouped (a quarter of a second) and sent in batches of 500; failed saves retry
+  with increasing waits up to a minute instead of hammering the server. The page warns before
+  closing while something is still being saved.
+- Database work: security checks run once per request (not once per row) and lookups are indexed,
+  so the small free server is never overloaded.
+- Abuse: logged-out visitors and unapproved accounts cannot read or change anything. Sign-in and
+  sign-up attempts are rate limited by Supabase itself (Authentication > Rate Limits; keep the defaults).
+- Settings & Backup > Database Usage shows the database size against the 500 MB limit.
+  Monthly downloads and live-update messages: Supabase > Organization > Usage.
+Rough sizes: 1,000 members with 5 services a week is about 260,000 attendance records a year,
+roughly 100 MB. Exporting and trimming old years is only needed after several years.
+Do not add a card or upgrade unless you choose to: on the Free plan nothing is billed automatically.
+
 GOOD TO KNOW
 - The top bar shows "All changes saved" when everything has reached the database.
 - Free Supabase projects pause after about a week with no use at all. Weekly church use keeps it awake;
   if it ever pauses, press "Restore project" in the Supabase dashboard.
+- After an app update that changes supabase/setup.sql, run the file again in the SQL Editor
+  (it keeps all records and accounts).
 - Password reset emails ("Forgot password?" and the admin's "Email Password Reset Link") need an email
   sender: Supabase > Authentication > Emails > SMTP Settings (a free Brevo or Resend account works).
   Supabase's built-in sender only delivers to your own Supabase team members.
+- If an account ever gets stuck (for example nobody is admin), the Supabase SQL Editor can fix it, e.g.
+  update public.profiles set role = 'admin', approved = true where email = 'you@example.com';
 - Settings & Backup > Download Full Backup still gives you an extra copy any time.
 
 DEMO LOGIN ACCOUNTS (only when the online database is NOT connected)
