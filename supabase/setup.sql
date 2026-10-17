@@ -152,6 +152,10 @@ create policy records_delete on public.records for delete to authenticated
 revoke all on public.profiles, public.records from anon;
 grant select, update, delete on public.profiles to authenticated;
 grant select, insert, update, delete on public.records to authenticated;
+-- Needed when "Automatically expose new tables" is turned off for the project.
+grant usage on schema public to authenticated;
+grant execute on function public.app_role() to authenticated;
+grant execute on function public.can_write_collection(text) to authenticated;
 
 -- 5. Live updates (other devices see changes immediately) ----------------------
 do $$
