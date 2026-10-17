@@ -4,6 +4,6 @@
 // in supabase/setup.sql decide what each signed-in person may read or change.
 // Leave both empty to run without the online database (records stay in this browser).
 window.REFINERS_CONFIG = {
-  supabaseUrl: '',
-  supabaseAnonKey: '',
+  supabaseUrl: 'https://arksljnvcfqlbgenhumv.supabase.co',
+  supabaseAnonKey: 'sb_publishable_s-BQIBXJ8ZlQlRi8xeoweQ_uT0TJ15j',
 };
