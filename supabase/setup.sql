@@ -1,6 +1,7 @@
 -- Refiners City Attendance — Supabase database setup
--- Run this whole file once in Supabase: SQL Editor > New query > paste > Run.
--- It is safe to run again later (it only creates what is missing / replaces functions and policies).
+-- Run this whole file in Supabase: SQL Editor > New query > paste > Run.
+-- It is safe to run again (for example after an app update): it only adds what is missing
+-- and replaces functions and policies. Existing records and accounts are kept.
 
 -- 1. Tables -----------------------------------------------------------------
 
@@ -26,6 +27,32 @@ create table if not exists public.records (
   updated_by uuid default auth.uid(),
   primary key (collection, id)
 );
+
+-- Deleted records are kept for a while as small "tombstones" so every device learns about
+-- the deletion when it downloads only what changed. They are purged after 45 days.
+alter table public.records add column if not exists deleted boolean not null default false;
+-- Which device made the change, so a device can ignore the live echo of its own edits.
+alter table public.records add column if not exists client_id text;
+create index if not exists records_updated_at_idx on public.records (updated_at);
+
+-- The server, not the phone's clock, decides when a record changed.
+create or replace function public.touch_record()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at := clock_timestamp();
+  if new.deleted then
+    new.data := '{}'::jsonb;
+  end if;
+  return new;
+end
+$$;
+
+drop trigger if exists touch_record on public.records;
+create trigger touch_record
+  before insert or update on public.records
+  for each row execute function public.touch_record();
 
 -- 2. Helper functions ---------------------------------------------------------
 
@@ -90,12 +117,14 @@ create trigger on_auth_user_created
   for each row execute function public.handle_new_user();
 
 -- Only admins can change role / approval; nobody can remove the last approved admin.
+-- (Changes typed in the Supabase SQL Editor have no signed-in user and are always allowed,
+-- so the church can recover if it is ever locked out.)
 create or replace function public.guard_profile_update()
 returns trigger
 language plpgsql security definer set search_path = public
 as $$
 begin
-  if public.app_role() is distinct from 'admin' then
+  if auth.uid() is not null and public.app_role() is distinct from 'admin' then
     new.role := old.role;
     new.approved := old.approved;
   end if;
@@ -115,39 +144,53 @@ create trigger guard_profile_update
   for each row execute function public.guard_profile_update();
 
 -- 4. Row level security -------------------------------------------------------
+-- "(select ...)" makes Postgres check the user's role once per request instead of once per row.
 
 alter table public.profiles enable row level security;
 alter table public.records enable row level security;
 
 drop policy if exists profiles_select on public.profiles;
 create policy profiles_select on public.profiles for select to authenticated
-  using (id = auth.uid() or public.app_role() is not null);
+  using (id = (select auth.uid()) or (select public.app_role()) is not null);
 
 drop policy if exists profiles_update on public.profiles;
 create policy profiles_update on public.profiles for update to authenticated
-  using (id = auth.uid() or public.app_role() = 'admin')
-  with check (id = auth.uid() or public.app_role() = 'admin');
+  using (id = (select auth.uid()) or (select public.app_role()) = 'admin')
+  with check (id = (select auth.uid()) or (select public.app_role()) = 'admin');
 
 drop policy if exists profiles_delete on public.profiles;
 create policy profiles_delete on public.profiles for delete to authenticated
-  using (public.app_role() = 'admin' and id <> auth.uid());
+  using ((select public.app_role()) = 'admin' and id <> (select auth.uid()));
 
 drop policy if exists records_select on public.records;
 create policy records_select on public.records for select to authenticated
-  using (public.app_role() is not null);
+  using ((select public.app_role()) is not null);
 
+-- Same rules as can_write_collection(), written inline so they stay cheap on big imports.
 drop policy if exists records_insert on public.records;
 create policy records_insert on public.records for insert to authenticated
-  with check (public.can_write_collection(collection));
+  with check (
+    (select public.app_role()) = 'admin'
+    or (collection = 'members' and (select public.app_role()) in ('bishop', 'g12'))
+    or (collection in ('prospects', 'messageRules', 'automationLog') and (select public.app_role()) is not null)
+  );
 
 drop policy if exists records_update on public.records;
 create policy records_update on public.records for update to authenticated
-  using (public.can_write_collection(collection))
-  with check (public.can_write_collection(collection));
+  using (
+    (select public.app_role()) = 'admin'
+    or (collection = 'members' and (select public.app_role()) in ('bishop', 'g12'))
+    or (collection in ('prospects', 'messageRules', 'automationLog') and (select public.app_role()) is not null)
+  )
+  with check (
+    (select public.app_role()) = 'admin'
+    or (collection = 'members' and (select public.app_role()) in ('bishop', 'g12'))
+    or (collection in ('prospects', 'messageRules', 'automationLog') and (select public.app_role()) is not null)
+  );
 
 drop policy if exists records_delete on public.records;
 create policy records_delete on public.records for delete to authenticated
-  using (public.can_write_collection(collection));
+  using ((select public.app_role()) = 'admin');
 
 revoke all on public.profiles, public.records from anon;
 grant select, update, delete on public.profiles to authenticated;
@@ -157,7 +200,63 @@ grant usage on schema public to authenticated;
 grant execute on function public.app_role() to authenticated;
 grant execute on function public.can_write_collection(text) to authenticated;
 
--- 5. Live updates (other devices see changes immediately) ----------------------
+-- 5. Housekeeping and usage (Church Admin only) -----------------------------------
+
+-- Removes deletion tombstones older than 45 days. The app calls this when the admin signs in.
+create or replace function public.purge_deleted_records()
+returns integer
+language plpgsql security definer set search_path = public
+as $$
+declare
+  removed integer;
+begin
+  if public.app_role() is distinct from 'admin' then
+    raise exception 'Only the Church Admin can do this.';
+  end if;
+  delete from public.records where deleted and updated_at < now() - interval '45 days';
+  get diagnostics removed = row_count;
+  return removed;
+end
+$$;
+
+-- Database size and record counts, shown on the Settings page.
+create or replace function public.usage_summary()
+returns jsonb
+language plpgsql stable security definer set search_path = public
+as $$
+begin
+  if public.app_role() is distinct from 'admin' then
+    raise exception 'Only the Church Admin can do this.';
+  end if;
+  return jsonb_build_object(
+    'database_bytes', pg_database_size(current_database()),
+    'records_bytes', pg_total_relation_size('public.records'),
+    'accounts', (select count(*) from public.profiles),
+    'collections', coalesce((
+      select jsonb_object_agg(collection, total)
+      from (select collection, count(*) as total from public.records where not deleted group by collection) counts
+    ), '{}'::jsonb),
+    'tombstones', (select count(*) from public.records where deleted)
+  );
+end
+$$;
+
+-- The database's clock, so devices know exactly up to when they have downloaded changes.
+create or replace function public.server_time()
+returns timestamptz
+language sql stable
+as $$
+  select now()
+$$;
+
+revoke all on function public.server_time() from public, anon;
+grant execute on function public.server_time() to authenticated;
+revoke all on function public.purge_deleted_records() from public, anon;
+revoke all on function public.usage_summary() from public, anon;
+grant execute on function public.purge_deleted_records() to authenticated;
+grant execute on function public.usage_summary() to authenticated;
+
+-- 6. Live updates (other devices see changes immediately) ----------------------
 do $$
 begin
   begin
