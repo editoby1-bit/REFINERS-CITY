@@ -34,7 +34,13 @@ WHAT IS INSIDE
   * reset any account password, remove accounts
 - My Account: every user can change their own password
 
-IMPORTANT NOTE ABOUT WHATSAPP
+AUTOMATIC WHATSAPP (SENDING TO HUNDREDS OR THOUSANDS AT ONCE)
+The app can send through the official WhatsApp Business API: one click sends to everyone selected, birthdays and
+holidays go out by themselves at 8:00 every morning, and a delivery log shows who received and read each message.
+It needs a Meta (Facebook) business account, a church phone number and approved message templates, and Meta charges
+per message. Full step-by-step guide: WHATSAPP_SETUP.md. Until it is set up, the free tap-to-send way below keeps working.
+
+IMPORTANT NOTE ABOUT WHATSAPP (free tap-to-send)
 Because the app has no server of its own, WhatsApp sending works by opening WhatsApp chat links with the prepared message text.
 That means:
 - messaging one person opens their WhatsApp chat straight away
@@ -136,6 +142,8 @@ FILES
 - cloud.js          (online database sync)
 - config.js         (your Supabase project URL and key)
 - supabase/setup.sql (run once in Supabase)
+- supabase/whatsapp.sql, supabase/functions/ (automatic WhatsApp, see WHATSAPP_SETUP.md)
+- whatsapp.js       (WhatsApp Centre screens for automatic sending)
 - vendor/supabase.js (Supabase library, bundled so no extra downloads are needed)
 - assets/logo.jpg
 

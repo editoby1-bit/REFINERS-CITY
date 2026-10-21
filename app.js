@@ -26,7 +26,22 @@ const escapeHtml = (text = '') => String(text)
   .replaceAll('>', '&gt;')
   .replaceAll('"', '&quot;')
   .replaceAll("'", '&#039;');
-const phoneDigits = (phone = '') => String(phone).replace(/\D/g, '');
+const DEFAULT_COUNTRY_CODE = String((window.REFINERS_CONFIG || {}).defaultCountryCode || '234').replace(/\D/g, '');
+// WhatsApp needs the full international number with no +, spaces or leading 0
+// (08030000001 -> 2348030000001). Returns '' when the number cannot be valid.
+// Keep in step with wa_normalize_phone() in supabase/whatsapp.sql.
+function normalizePhone(phone = '', countryCode = (typeof waCountryCode === 'function' ? waCountryCode() : DEFAULT_COUNTRY_CODE)) {
+  let digits = String(phone).replace(/\D/g, '');
+  if (!digits) return '';
+  if (digits.startsWith('00')) digits = digits.slice(2);
+  else if (digits.startsWith('0')) digits = countryCode + digits.slice(1);
+  else if (digits.length <= 10) digits = countryCode + digits;
+  if (digits.startsWith(countryCode + '0')) digits = countryCode + digits.slice(countryCode.length + 1);
+  if (digits.length < 11 || digits.length > 15) return '';
+  if (countryCode === '234' && digits.startsWith('234') && digits.length !== 13) return '';
+  return digits;
+}
+const phoneDigits = (phone = '') => normalizePhone(phone);
 const whatsappUrl = (phone, text) => `https://wa.me/${phoneDigits(phone)}?text=${encodeURIComponent(text)}`;
 
 const LEVELS = {
@@ -473,6 +488,8 @@ function getDueAutomations() {
   const today = todayStr();
   const todayMonthDay = today.slice(5);
   return state.db.messageRules.filter(rule => {
+    // Rules with a WhatsApp template are sent by the server every morning.
+    if (rule.templateName && waApiMode()) return false;
     if (rule.type === 'birthday') {
       const list = getAudience(rule).filter(item => (item.birthday || '').slice(5) === todayMonthDay);
       if (!list.length) return false;
@@ -788,6 +805,7 @@ async function enterCloudSession(authUser) {
   state.cloudBooting = false;
   state.view = 'dashboard';
   render();
+  loadWhatsappState(true).then(fetched => { if (fetched && state.cloudUserId && ['messages', 'automation'].includes(state.view)) requestRemoteRender(); });
 }
 
 // Once a day, the admin's device asks the database to drop deletion markers older than 45 days.
@@ -1655,7 +1673,9 @@ function renderAttendanceWorkspace(eventId) {
 
 function renderMessages() {
   const options = getAudienceOptions();
+  const apiMode = waApiMode();
   return `
+    ${renderWhatsappStatusCard()}
     <section class="two-col">
       <div class="card">
         <h3>Manual / Scheduled Message</h3>
@@ -1698,26 +1718,33 @@ function renderMessages() {
             <label>Select Non Members</label>
             <div class="checklist" style="max-height:220px;">${options.prospects.map(p => `<label class="check-row"><span>${escapeHtml(p.fullName)}</span><input type="checkbox" name="selectedProspectIds" value="${p.id}" /></label>`).join('')}</div>
           </div>
+          ${apiMode ? renderWhatsappTemplateField() : `
           <div class="field" style="grid-column:1/-1;">
             <label>Message</label>
             <textarea name="message" placeholder="Use {name} to personalise the message." required></textarea>
-          </div>
+            ${waIsAdmin() && waState().settings?.enabled && waActiveTemplates().length ? `<small><button class="link-btn" type="button" data-wa-api-mode>Use automatic sending with a template instead</button></small>` : ''}
+          </div>`}
           <div class="field"><label>Schedule Date (optional)</label><input type="date" name="scheduleDate" /></div>
           <div class="field"><label>Yearly Repeat</label>
             <select name="yearly"><option value="false">No</option><option value="true">Yes</option></select>
           </div>
           <div class="inline-actions" style="grid-column:1/-1;">
-            <button class="btn" type="submit">Send Now</button>
+            <button class="btn" type="submit">${apiMode ? 'Send Now (automatic)' : 'Send Now'}</button>
             <button class="btn secondary" type="button" id="saveMessageRuleBtn">Save as Scheduled Rule</button>
           </div>
         </form>
       </div>
       <div class="card">
         <h3>How WhatsApp Works Here</h3>
-        <div class="notice">Because GitHub Pages is static, the app prepares and opens WhatsApp chats with the right text and audience. Scheduled and automated campaigns become due inside the app and can be sent instantly when you open it.</div>
+        ${apiMode
+          ? `<div class="notice success-box">Automatic sending is on. Messages go out in the background through the WhatsApp Business API, a few every second, and the Delivery Log below shows who received and read them. Scheduled, birthday and holiday rules that have a template are sent every morning at 8:00 (Lagos time) even when nobody has the app open.</div>`
+          : `<div class="notice">The app prepares and opens WhatsApp chats with the right text and audience, one chat at a time. You tap Send in WhatsApp for each person. Scheduled and automated campaigns become due inside the app and can be sent when you open it.${waIsAdmin() && !waState().unavailable && waState().settings ? ' Switch on automatic sending above to send to many people at once.' : ''}</div>`}
         <div class="message-preview">Supported audiences: one person, selected names, G12 class, area, everyone, birthdays today, and all non members.</div>
       </div>
     </section>
+    ${renderWhatsappLog()}
+    ${renderWhatsappTemplates()}
+    ${renderWhatsappOptoutsAndTest()}
   `;
 }
 
@@ -1820,13 +1847,14 @@ function renderBirthdays() {
 }
 
 function renderAutomation() {
+  const apiMode = waApiMode();
   const rules = state.db.messageRules.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   return `
     <section class="card">
       <h3>Saved Rules</h3>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Title</th><th>Type</th><th>Audience</th><th>Schedule</th><th>Yearly</th><th>Action</th></tr></thead>
+          <thead><tr><th>Title</th><th>Type</th><th>Audience</th><th>Schedule</th><th>Yearly</th>${apiMode ? '<th>Automatic template</th>' : ''}<th>Action</th></tr></thead>
           <tbody>
             ${rules.length ? rules.map(rule => `
               <tr>
@@ -1835,9 +1863,10 @@ function renderAutomation() {
                 <td>${escapeHtml(rule.audienceType.replaceAll('_',' '))}</td>
                 <td>${rule.type === 'holiday' && rule.title.toLowerCase().includes('easter') ? 'Easter (auto-computed)' : escapeHtml(rule.scheduleDate || 'Birthday / Dynamic')}</td>
                 <td>${rule.yearly ? 'Yes' : 'No'}</td>
+                ${apiMode ? `<td>${waRuleTemplateSelect(rule)}</td>` : ''}
                 <td><div class="inline-actions"><button class="btn tiny" data-run-rule="${rule.id}">Run</button>${state.session.role === 'admin' ? `<button class="btn tiny danger" type="button" data-delete-rule="${rule.id}">Delete</button>` : ''}</div></td>
               </tr>
-            `).join('') : `<tr><td colspan="6">No automation rules saved yet.</td></tr>`}
+            `).join('') : `<tr><td colspan="${apiMode ? 7 : 6}">No automation rules saved yet.</td></tr>`}
           </tbody>
         </table>
       </div>
@@ -1849,11 +1878,13 @@ function renderAutomation() {
         <div class="inline-actions">
           <button class="btn" data-add-holiday="Christmas">Add Christmas Rule</button>
           <button class="btn secondary" data-add-holiday="Easter">Add Easter Rule</button>
+          <button class="btn" data-add-birthday="members">Add Member Birthday Rule</button>
+          <button class="btn secondary" data-add-birthday="prospects">Add Non Member Birthday Rule</button>
         </div>
       </div>
       <div class="card">
         <h3>Engine Note</h3>
-        <div class="notice">Birthday, holiday, and scheduled rules are stored in the app. When the app is opened, due rules can be run instantly through WhatsApp links.</div>
+        <div class="notice">${apiMode ? 'Rules with an <strong>automatic template</strong> are sent by the server every morning at 8:00 (Lagos time), even when nobody has the app open. Rules without one still need someone to press Run.' : 'Birthday, holiday, and scheduled rules are stored in the app. When the app is opened, due rules can be run instantly through WhatsApp links.'}</div>
       </div>
     </section>
   `;
@@ -2181,7 +2212,8 @@ function syncFlashNotice() {
   state.noticeTimer = window.setTimeout(() => {
     if (state.notice && state.notice.id === noticeId) {
       clearNotice();
-      render();
+      // Remove just the message: redrawing the page would wipe anything being typed or chosen.
+      q('.app-notice')?.remove();
     }
   }, 2400);
 }
@@ -2189,11 +2221,17 @@ function syncFlashNotice() {
 function bindAppEvents() {
   syncFlashNotice();
   bindSendQueue();
+  bindWhatsapp();
+  bindWhatsappRules();
 
   qq('[data-nav]').forEach(btn => btn.addEventListener('click', () => {
     state.view = btn.dataset.nav;
     state.mobileNavOpen = false;
     render();
+    if (['messages', 'automation'].includes(state.view) && CLOUD_ENABLED) {
+      const view = state.view;
+      loadWhatsappState().then(fetched => { if (fetched && state.view === view) requestRemoteRender(); });
+    }
   }));
 
   qq('[data-action="logout"]').forEach(btn => btn.addEventListener('click', handleLogout));
@@ -2379,7 +2417,8 @@ function bindAppEvents() {
       q('#messageAudienceType').value = 'single_member';
       syncMessageAudienceVisibility();
       q('select[name="memberId"]').value = btn.dataset.messageSingleMember;
-      q('textarea[name="message"]').value = 'Hello {name}, we are glad to have you with us at Refiners City International Church.';
+      const box = q('textarea[name="message"]');
+      if (box) box.value = 'Hello {name}, we are glad to have you with us at Refiners City International Church.';
     }, 0);
   }));
 
@@ -2390,7 +2429,8 @@ function bindAppEvents() {
       q('#messageAudienceType').value = 'single_prospect';
       syncMessageAudienceVisibility();
       q('select[name="prospectId"]').value = btn.dataset.messageSingleProspect;
-      q('textarea[name="message"]').value = 'Hello {name}, we would love to welcome you again to Refiners City International Church.';
+      const box = q('textarea[name="message"]');
+      if (box) box.value = 'Hello {name}, we would love to welcome you again to Refiners City International Church.';
     }, 0);
   }));
 
@@ -2398,6 +2438,10 @@ function bindAppEvents() {
   qq('[data-delete-rule]').forEach(btn => btn.addEventListener('click', () => handleDeleteRule(btn.dataset.deleteRule)));
   qq('[data-quick-birthday]').forEach(btn => btn.addEventListener('click', () => {
     const targets = getBirthdaysToday(btn.dataset.quickBirthday);
+    if (waApiMode()) {
+      waSendBirthdays(targets);
+      return;
+    }
     const message = 'Happy Birthday {name}. Refiners City International Church celebrates you today.';
     openWhatsappForTargets(targets, message);
   }));
@@ -2415,6 +2459,7 @@ function bindAppEvents() {
   q('#restoreBackupInput')?.addEventListener('change', handleRestoreBackup);
   qq('[data-export-csv]').forEach(btn => btn.addEventListener('click', () => handleExportCsv(btn.dataset.exportCsv)));
   qq('[data-add-holiday]').forEach(btn => btn.addEventListener('click', () => addHolidayRule(btn.dataset.addHoliday)));
+  qq('[data-add-birthday]').forEach(btn => btn.addEventListener('click', () => addBirthdayRule(btn.dataset.addBirthday)));
 }
 
 function handleAddMember(event) {
@@ -3372,6 +3417,10 @@ function handleAbsenteeMessaging(mode = 'all') {
     render();
     return;
   }
+  if (waApiMode()) {
+    waSendAbsentees(targets, eventObj);
+    return;
+  }
   openWhatsappForTargets(targets, `Hello {name}, we missed you at ${eventObj?.name || 'service'} today at Refiners City International Church. We hope you are well and would love to see you again.`);
 }
 
@@ -3464,7 +3513,7 @@ function collectMessageFormData() {
     audienceType,
     audienceId,
     selectedIds,
-    message: String(fd.get('message')).trim(),
+    message: String(fd.get('message') || '').trim(),
     scheduleDate: String(fd.get('scheduleDate') || ''),
     yearly: String(fd.get('yearly')) === 'true',
   };
@@ -3472,6 +3521,10 @@ function collectMessageFormData() {
 
 function handleSendMessageNow(event) {
   event.preventDefault();
+  if (waApiMode()) {
+    waSendFromForm();
+    return;
+  }
   const payload = collectMessageFormData();
   const targets = getMessageTargets(payload);
   if (!targets.length) {
@@ -3484,7 +3537,18 @@ function handleSendMessageNow(event) {
 
 function handleSaveMessageRule() {
   const payload = collectMessageFormData();
-  if (!payload.message) {
+  const apiMode = waApiMode();
+  const template = apiMode ? waFindTemplate(q('#waTemplateSelect')?.value) : null;
+  if (apiMode) {
+    const problem = !template ? 'Choose a template first.'
+      : !payload.scheduleDate ? 'Choose the date this message should go out.'
+      : waTemplateProblem(template, {}) ? 'Scheduled rules cannot use a template that includes the service name or date.' : '';
+    if (problem) {
+      showNotice(problem, 'error');
+      render();
+      return;
+    }
+  } else if (!payload.message) {
     showNotice('Enter a message first.', 'error');
     render();
     return;
@@ -3496,13 +3560,15 @@ function handleSaveMessageRule() {
     audienceType: payload.audienceType,
     audienceId: payload.audienceId,
     selectedIds: payload.selectedIds,
-    message: payload.message,
+    message: payload.message || (template ? waPreviewText(template) : ''),
+    templateName: template ? template.name : '',
+    templateLanguage: template ? template.language : '',
     scheduleDate: payload.scheduleDate,
     yearly: payload.yearly,
     createdAt: nowStr(),
   });
   saveDb();
-  showNotice('Message rule saved.');
+  showNotice(template ? 'Rule saved: it will be sent automatically at 8:00 on that day.' : 'Message rule saved.');
   state.view = 'automation';
   render();
 }
@@ -3538,6 +3604,16 @@ function runRuleNow(ruleId) {
   const rule = state.db.messageRules.find(r => r.id === ruleId);
   if (!rule) return;
   const targets = getAudience(rule);
+  const ruleTemplate = rule.templateName ? waFindTemplate(`${rule.templateName}|${rule.templateLanguage || 'en'}`) : null;
+  if (ruleTemplate && waApiMode()) {
+    if (!targets.length) {
+      showNotice('This rule currently has no matching audience.', 'error');
+      render();
+      return;
+    }
+    waConfirmAndSend({ targets, template: ruleTemplate, kind: 'rule', afterQueued: (queued) => { if (queued) { markAutomationSent(rule.id); render(); } } });
+    return;
+  }
   if (!targets.length) {
     showNotice('This rule currently has no matching audience.', 'error');
     render();
@@ -3545,6 +3621,29 @@ function runRuleNow(ruleId) {
   }
   openWhatsappForTargets(targets, rule.message);
   markAutomationSent(rule.id);
+  render();
+}
+
+function addBirthdayRule(group) {
+  const audienceType = group === 'prospects' ? 'all_prospects' : 'birthdays_today';
+  if (state.db.messageRules.some(rule => rule.type === 'birthday' && rule.audienceType === audienceType)) {
+    showNotice('That birthday rule already exists.', 'error');
+    render();
+    return;
+  }
+  state.db.messageRules.push({
+    id: uid('rule'),
+    title: group === 'prospects' ? 'Non Member Birthday Blessing' : 'Birthday Blessing',
+    type: 'birthday',
+    audienceType,
+    audienceId: '',
+    message: 'Happy Birthday from Refiners City International Church. We celebrate you and pray for a blessed new year.',
+    scheduleDate: '',
+    yearly: true,
+    createdAt: nowStr(),
+  });
+  saveDb();
+  showNotice('Birthday rule added.');
   render();
 }
 
