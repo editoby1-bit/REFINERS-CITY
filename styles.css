@@ -451,3 +451,14 @@ a.btn, label.btn { display: inline-flex; align-items: center; justify-content: c
 .password-wrap input { width: 100%; padding-right: 64px; }
 .password-toggle { position: absolute; right: 8px; border: 0; background: transparent; color: var(--primary, #b0144f); font-weight: 700; font-size: 13px; padding: 6px 8px; cursor: pointer; border-radius: 8px; }
 .password-toggle:focus-visible { outline: 2px solid currentColor; }
+
+/* Automatic WhatsApp */
+.wa-bar { display: flex; height: 10px; border-radius: 999px; overflow: hidden; background: #f3e6ec; }
+.wa-bar span { display: block; height: 100%; }
+.wa-bar .wa-read { background: #1f8a5b; }
+.wa-bar .wa-delivered { background: #55b585; }
+.wa-bar .wa-sent { background: #9fd4b8; }
+.wa-bar .wa-active { background: #e5b34a; }
+.wa-bar .wa-failed { background: var(--danger); }
+.wa-bar .wa-skipped { background: #b9a9b1; }
+details.card > summary { cursor: pointer; }

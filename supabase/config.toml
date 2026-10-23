@@ -1,0 +1,7 @@
+# Used only if you deploy with the Supabase command line tool. In the dashboard, switch "Verify JWT" OFF
+# for both functions instead (the database and Meta authenticate with their own secrets).
+[functions.wa-send]
+verify_jwt = false
+
+[functions.wa-webhook]
+verify_jwt = false
